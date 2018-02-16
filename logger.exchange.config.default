@@ -1,0 +1,45 @@
+# -------
+# General
+# -------
+service_name    :: Exchange Default Logger|Exchange Default Log Service
+console         :: console
+seen            :: seen.exchange.default
+errorlog        :: traceback-%(now)s-%(ctype)s-%(alias)s.log
+# -----------------
+# Debug/Trace flags
+# -----------------
+debug           :: 1
+deepdebug       :: 0
+trace           :: 1
+logtrace        :: 1
+existstrace     :: 1
+observertrace   :: 0
+disableoutput   :: 0
+printexceptions :: 1
+# ------
+# Source
+# ------
+root	        :: Z:/exchange/11.21
+ip              :: 127.0.0.1
+ctype           :: Exchange
+client          :: *
+encoding        :: utf-8
+filemask        :: (.*)_(\d{2}\.\d{2}\.\d{4}).*(?si)
+options         :: with_aliases:jzdo:unique:count
+date_format     :: %Y-%m-%d %H:%M:%S.%f
+alias           :: default
+# -------------------
+# Scenario parameters
+# -------------------
+# Don't load Log-files matched with given keywords
+suppressed      :: 
+# Match filename with `client` and `alias`
+check_filename  :: 0
+# Print decoder errors
+decoder_trace   :: 0
+# Remember unresolved lines for suspended launch
+stack_events    :: 0
+# Run as Log-lines generator
+emitter         :: 1
+# Limit count of processed orders
+limit           :: 0

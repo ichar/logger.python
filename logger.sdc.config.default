@@ -1,0 +1,44 @@
+# -------
+# General
+# -------
+service_name    :: SDC Default Logger|SDC Default Log Service
+console         :: console
+seen            :: seen.sdc.default
+errorlog        :: traceback-%(now)s-%(ctype)s-%(alias)s.log
+# -----------------
+# Debug/Trace flags
+# -----------------
+debug           :: 1
+deepdebug       :: 0
+trace           :: 1
+logtrace        :: 1
+existstrace     :: 1
+observertrace   :: 0
+disableoutput   :: 0
+printexceptions :: 1
+# ------
+# Source
+# ------
+root	        :: Z:/SDC/default
+ip              :: 127.0.0.1
+ctype           :: SDC
+client          :: *
+encoding        :: utf-8
+filemask        :: sdc_(.*)_(\d{2}\.\d{2}\.\d{4}).*(?si)
+options         :: with_aliases
+alias           :: default
+# -------------------
+# Scenario parameters
+# -------------------
+# Don't load Log-files matched with given keywords
+suppressed      :: CardsLoad:CardUnload
+# Match filename with `client` and `alias`
+check_filename  :: 0
+# Print decoder errors
+decoder_trace   :: 0
+# Remember unresolved lines for suspended launch
+stack_events    :: 0
+# Run as Log-lines generator
+emitter         :: 1
+# Limit count of processed orders
+limit           :: 0

@@ -1,0 +1,1 @@
+pyinstaller -F --hidden-import=pymssql --hidden-import=_mssql --hidden-import=win32timezone service.py
