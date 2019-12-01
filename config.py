@@ -44,36 +44,36 @@ default_encoding       = 'cp1251'
 default_iso            = 'ISO-8859-1'
 
 CONNECTION = {
-    'bankperso'    : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'BankDB', 'timeout':15 },
-    'orderstate'   : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'OrderState', 'timeout':15 },
-    'configurator' : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'BankDB', 'timeout':15  },
-    'orderlog'     : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'OrderLog', 'timeout':15  },
+    'bankperso'    : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'BankDB', 'timeout':15 },
+    'orderstate'   : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'OrderState', 'timeout':15 },
+    'configurator' : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'BankDB', 'timeout':15  },
+    'orderlog'     : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'OrderLog', 'timeout':15  },
 }
 
 smtphost1 = {
-    'host'         : '172.19.13.5', 
+    'host'         : '172.9.9.9', 
     'port'         : 25,
     'connect'      : None,
     'tls'          : 0,
     'method'       : 1,
-    'from'         : 'mailrobot@rosan.ru',
+    'from'         : 'mailrobot@company.ru',
 }
 
 smtphost2 = {
     'host'         : 'smtp-mail.outlook.com', 
     'port'         : 587,
-    'connect'      : {'login' : "support@expresscard.ru", 'password' : "Rof86788"},
+    'connect'      : {'login' : "support@company.ru", 'password' : "Rof86788"},
     'tls'          : 1,
     'method'       : 2,
-    'from'         : 'support@expresscard.ru',
+    'from'         : 'support@company.ru',
 }
 
 smtphosts = (smtphost1, smtphost2)
 
 email_address_list = {
-    'adminbd'      : 'admin_bd@rosan.ru',     
-    'support'      : 'support@expresscard.ru',
-    'mailrobot'    : 'mailrobot@rosan.ru',
+    'adminbd'      : 'admin_bd@company.ru',     
+    'support'      : 'support@company.ru',
+    'mailrobot'    : 'mailrobot@company.ru',
 }
 
 image_encoding = {
