@@ -47,7 +47,7 @@ pywin32==221
 PyYAML==3.12
 redis==2.10.3
 reportlab==3.2.0
-requests==2.7.0
+requests==2.20.0
 requests-oauthlib==0.4.1
 rivescript==1.8.0
 selenium==2.47.1
