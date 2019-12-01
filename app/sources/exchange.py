@@ -188,7 +188,7 @@ class Source(AbstractSource):
         file_name = order.get('FName')
         client = order.get('BankName')
 
-        refreshed = order.get('_refreshed', False)
+        refreshed = order.get(ORDER_REFRESHED, False)
         if kw.get('observer'):
             refreshed = refreshed if not self.config.get('forced_refresh') else False
 
@@ -215,7 +215,7 @@ class Source(AbstractSource):
                 if point in file_name:
                     keys.append(file_name.split(point)[0])
 
-                order['_refreshed'] = True
+                order[ORDER_REFRESHED] = True
 
             dates = (date_from, date_to,)
 
@@ -250,8 +250,9 @@ class Source(AbstractSource):
         else:
             aliases = order.get('aliases') or []
 
-        order['keys'] = keys
-        order['aliases'] = aliases
+        if not refreshed:
+            order['keys'] = keys
+            order['aliases'] = aliases
 
         return config, (client, file_id, file_name,), (keys, columns, dates, aliases, split_by,)
 
@@ -298,6 +299,10 @@ class Source(AbstractSource):
     ##  ------
     ##  Public
     ##  ------
+
+    def refreshOrder(self, order):
+        self._make_logger_params(order)
+        order[ORDER_REFRESHED] = True
 
     def getLogs(self, order, **kw):
         """

@@ -28,7 +28,7 @@ from config import (
      isIterable, print_to, print_exception, setErrorlog, getErrorlog
      )
 
-#from app.worker import Logger
+from app.settings import *
 from app.utils import normpath, getToday, getTime, getDate, getDateOnly, checkDate, spent_time
 
 from app.sources import BaseEmitter, AbstractSource, LogProducer, LogConsumer
@@ -38,7 +38,8 @@ from app.sources.exchange import Source as Exchange
 
 is_v3 = sys.version_info[0] > 2 and True or False
 
-version = '1.0 with cp1251 (Python3)'
+_DEFAULT_OBSERVER_TIMEOUT = 1
+_DEFAULT_CONSUMER_SLEEP = 1
 
 _config = {}
 
@@ -95,6 +96,8 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
         self.config_source = normpath(os.path.join(basedir, args[0]))
         # Stop flag
         self.stop_requested = False
+        # Restart flag
+        self.restart_requested = False
 
         self._started = None
         self._finished = None
@@ -121,10 +124,13 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
     def _stop_logger(self):
         del self._logger
 
-    def _out(self, line):
+    def _out(self, line, force=None, is_error=False):
         if self._config.get('disableoutput'):
             return
-        logging.info(line)
+        if is_error:
+            logging.error(line)
+        elif self._config.get('trace') or force:
+            logging.info(line)
 
     def SvcStop(self):
         #self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
@@ -140,15 +146,36 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.stop_event)
         self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
-    def refreshService(self):
-        self._update_config()
-        self._set_errorlog()
+    @property
+    def observer_timeout(self):
+        return float(self._config.get('timeout') or _DEFAULT_OBSERVER_TIMEOUT)
+
+    def watch_everything(self):
+        return self._config.get('watch_everything')
+
+    @property
+    def consumer_sleep(self):
+        return float(self._config.get('sleep') or _DEFAULT_CONSUMER_SLEEP)
 
     def _set_errorlog(self):
         setErrorlog((self._config.get('errorlog') % self._config).lower())
 
     def _update_config(self):
         self._config = make_config(self.config_source)
+
+    def refreshService(self):
+        self._update_config()
+        self._set_errorlog()
+        # =======
+        # Restart
+        # =======
+        if not self._config.get('refresh'):
+            return
+        #
+        # Stop the service and restart in delay
+        #
+        self.stop_requested = True
+        restart()
 
     def SvcDoRun(self):
         servicemanager.LogMsg(
@@ -161,8 +188,6 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
         # =====
         self._started = getToday()
         self._out('==> Starting service at %s' % getDate(self._started, UTC_FULL_TIMESTAMP))
-
-        self.stop_requested = False
         #
         # Read app config
         #
@@ -197,6 +222,8 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
         self._processed = 0
         self._found = {}
 
+        self.stop_requested = False
+
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         self._start_logger()
 
@@ -213,46 +240,102 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
             self.start_observer(app)
 
             app._term()
+
+            del app
+        
         except:
             print_exception()
+            self._out('main thread exception (look at traceback.log)', is_error=True)
 
         self._stop_logger()
 
     def start_observer(self, app):
+        restart_timeout = self._config.get('restart')
+        
         lock = threading.Lock()
 
         source = app._observer_source()
         app._beforeObserve()
 
-        producer = LogProducer(app, lock, source=source, logger=self._logger)
-        consumer = LogConsumer(args=(app, producer, lock, self._logger,))
-        consumer.start()
+        producer = consumer = observer = None
 
-        try:
-            observer = Observer(timeout=0.5)
-            observer.schedule(producer, source, recursive=True)
-            observer.start()
-
-            observer_found = {}
-
-            while not self.stop_requested:
-                time.sleep(5)
-
-            observer.stop()
-            observer_found = consumer.stop()
-
-            if observer_found:
-                self._found.update(observer_found)
-
-        except:
+        def _default_except_handler(timeout=None):
+            if consumer is not None and consumer.is_alive():
+                consumer.stop()
             observer = None
-            consumer.stop()
-            raise
 
-        finally:
-            if observer is not None:
-                observer.join()
-            consumer.join()
+            if timeout:
+                time.sleep(timeout)
+
+        observer_found = None
+
+        while True:
+            self.restart_requested = False
+
+            producer = LogProducer(app, lock, source=source, logger=self._logger, watch_everything=self.watch_everything)
+            consumer = LogConsumer(args=(app, producer, lock, self._logger, self.consumer_sleep))
+            consumer.start()
+
+            try:
+                observer = Observer(timeout=self.observer_timeout)
+                observer.schedule(producer, source, recursive=True)
+                observer.start()
+
+                observer_found = {}
+
+                while not self.stop_requested:
+                    if restart_timeout and producer.timestamp is not None:
+                        timestamp = getToday() - producer.timestamp
+                        if timestamp.total_seconds() > restart_timeout:
+                            self.restart_requested = True
+                            break
+
+                    time.sleep(5)
+
+                    if not observer.is_alive():
+                        self._out('observer is lifeless', is_error=True)
+                        break
+                    if not consumer.is_alive():
+                        self._out('cunsumer is lifeless', is_error=True)
+                        break
+
+            except FileNotFoundError as ex:
+                self.restart_requested = True
+                self._out('!!! Observer Exception: %s' % ex, is_error=True)
+
+                _default_except_handler(15)
+
+            except:
+                _default_except_handler()
+                raise
+
+            else:
+                self._out('==> Stop, stop_requested: %s' % self.stop_requested)
+
+            finally:
+                if consumer is not None and consumer.is_alive():
+                    observer_found = consumer.stop()
+                    consumer.join()
+                if observer is not None and observer.is_alive():
+                    producer.stop()
+                    observer.stop()
+
+                if observer_found:
+                    self._found.update(observer_found)
+
+                if observer is not None:
+                    observer.join()
+
+            consumer = None
+            producer = None
+            observer = None
+
+            if not self.restart_requested or self.stop_requested:
+                break
+
+            self._out('==> Restart...')
+
+        self._out('==> Finish')
 
     def run(self, app):
         emitter = self._config.get('emitter') or False
@@ -285,6 +368,12 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
             self._out('>>> Unresolved: %d lines' % app._unresolved_lines())
 
 
+@delay(30.0)
+def restart():
+    service = LoggerWindowsService._svc_name_
+    logging.info('==> Restarting service[%s]' % service)
+    win32serviceutil.RestartService(service)
+
 def make_config(source, encoding=default_encoding):
     with open(source, 'r', encoding=encoding) as fin:
         for line in fin:
@@ -298,8 +387,13 @@ def make_config(source, encoding=default_encoding):
             key = x[0].strip()
             value = x[1].strip()
 
-            if key == 'suppressed':
+            if not key:
+                continue
+            elif key == 'suppressed':
                 value = list(filter(None, value.split(':')))
+            elif key == 'delta_datefrom':
+                value = list(filter(None, value.split(':')))
+                value = [int(x) for x in value]
             elif '|' in value:
                 value = value.split('|')
             elif value.lower() in 'false:true':
@@ -329,7 +423,7 @@ def setup(name, source):
     if title:
         LoggerWindowsService._svc_display_name_ = title
     if description:
-        LoggerWindowsService._svc_description_ = '%s, basedir: %s. Version %s' % (description, basedir, version)
+        LoggerWindowsService._svc_description_ = '%s, basedir: %s. Version %s' % (description, basedir, product_version)
     
     win32serviceutil.HandleCommandLine(LoggerWindowsService, customInstallOptions='s:')
 
@@ -387,7 +481,7 @@ if __name__ == '__main__':
         _pout('-->         and all dependent services will be stopped, each waiting')
         _pout('-->         the specified period.')
         _pout('--> ')
-        _pout('--> Version:%s' % version)
+        _pout('--> Version %s' % product_version)
 
     elif len(argv) > 1 and argv[1]:
 

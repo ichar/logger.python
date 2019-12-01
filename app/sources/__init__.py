@@ -6,9 +6,11 @@ import time
 import threading
 
 from config import (
-     CONNECTION, IsDebug, IsDeepDebug, IsExistsTrace, IsTrace, IsDisableOutput, IsObserverTrace,
+     CONNECTION, 
+     IsDebug, IsDeepDebug, IsTrace, IsObserverTrace, IsExistsTrace, IsDisableOutput, IsPrintExceptions, IsNoEmail, 
      default_unicode, default_encoding, default_iso, cr,
-     LOCAL_EASY_DATESTAMP, UTC_FULL_TIMESTAMP, DATE_STAMP,
+     LOCAL_EASY_DATESTAMP, UTC_FULL_TIMESTAMP, DATE_STAMP, 
+     MAX_UNRESOLVED_LINES, COMPLETE_STATUSES,
      print_to, print_exception
      )
 
@@ -16,15 +18,17 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, RegexMatchingEventHandler
 
 from functools import wraps
+from copy import deepcopy
 
 from ..settings import *
 from ..database import database_config, BankPersoEngine
+from ..mails import send_simple_mail
 from ..worker import checkfile, lines_emitter
-from ..utils import normpath, getToday, getTime, getDate, getDateOnly, checkDate, isIterable
+from ..utils import normpath, getToday, getTime, getDate, getDateOnly, checkDate, isIterable, monthdelta, daydelta
 
 engines = {}
 
-args = {
+ORDER_PARAMS = {
     'bank'      : 'ClientID', 
     'type'      : 'FileTypeID', 
     'status'    : 'FileStatusID', 
@@ -32,7 +36,7 @@ args = {
     'date_from' : 'StatusDate', 
     'date_to'   : 'StatusDate', 
     'id'        : 'FileID', 
-    # --- extra ---
+    # ------- extra ------- #
     'client'    : 'BankName',
     'complete'  : 'FileStatusID',
     'orderdate' : 'RegisterDate', 
@@ -44,10 +48,93 @@ info_splitter = '::'
 point = '.'
 observer_prefix = '***'
 
+ORDER_INACTIVE = '_inactive'
+ORDER_REFRESHED = '_refreshed'
+
 # Local constants
-_INACTIVE = 'inactive'
-_REFRESHED = '_refreshed'
 _MIN_MESSAGE_SIZE = 20
+_CHECK_UNRESOLVED_LIMIT = 10
+
+_EMERGENCY_CODES = ('ERROR', 'WARNING')
+_EMERGENCY_HTML = '''
+<html>
+<head>
+  <style type="text/css">
+    h1 { font-size:18px; padding:0; margin:0 0 10px 0; }
+    div.box * { display:block; }
+    dd { font-size:16px; font-weight:bold; line-height:24px; padding:0; color:#468; margin-left:10px; white-space:nowrap; }
+    span { color:#000; padding-top:3px; font-size:12px; white-space:nowrap; }
+    a { cursor:pointer; }
+    .client {}
+    .order * { display:inline-block !important; }
+    .caption { padding-top:10px; padding-bottom:10px; }
+    .info { padding-top:10px; }
+    .code { padding:5px 10px 5px 10px; border:1px solid #806080; width:100px; text-align:center; color:white; }
+    .error { background-color:#c72424; }
+    .warning { background-color:#0d24b8; }
+    div.message { margin-top:10px; font:normal 13px Verdana; color:#864644; }
+    div.line { border-top:1px dotted #888; width:100%%; height:1px; margin:10px 0 10px 0; }
+    div.line hr { display:none; }
+  </style>
+</head>
+<body>
+  <div class="box">
+  <h1 class="center">Уведомление о событии</h1>
+  <table>
+  <tr><td><dd class="code %(code)s">%(Code)s</dd></td></tr>
+  <tr><td class="caption">Файл заказа:</td></tr>
+  <tr><td><dd class="client">%(ClientName)s</dd></td></tr>
+  <tr><td><dd class="order">%(FileName)s</dd></td></tr>
+  <tr><td><dd class="order">ID&nbsp;<a target="_blank" href="%(webperso)s?_id=%(FileID)s">%(FileID)s</a></dd></td></tr>
+  <tr><td><span class="info">%(server)s</span></td></tr>
+  <tr><td><span>%(log)s</span></td></tr>
+  <tr><td><span>%(Date)s</span></td></tr>
+  <tr><td><div class="message">%(Message)s</div></td></tr>
+  <tr><td><div class="line"><hr></div></td></tr>
+  </table>
+  </div>
+</body>
+</html>
+'''
+_EMERGENCY_ALARM_HTML = '''
+<html>
+<head>
+  <style type="text/css">
+    h1 { font-size:18px; padding:0; margin:0 0 10px 0; }
+    div.box * { display:block; }
+    dd { font-size:16px; font-weight:bold; line-height:24px; padding:0; color:#468; margin-left:10px; white-space:nowrap; }
+    span { color:#000; padding-top:3px; font-size:12px; white-space:nowrap; }
+    a { cursor:pointer; }
+    .client {}
+    .order * { display:inline-block !important; }
+    .caption { padding-top:10px; padding-bottom:10px; }
+    .info { padding-top:10px; }
+    .code { padding:5px 10px 5px 10px; border:1px solid #806080; width:100px; text-align:center; color:white; width:150px; }
+    .error { background-color:#c72424; }
+    .warning { background-color:#0d24b8; }
+    div.message { margin-top:10px; font:normal 13px Verdana; color:#864644; }
+    div.line { border-top:1px dotted #888; width:100%%; height:1px; margin:10px 0 10px 0; }
+    div.line hr { display:none; }
+  </style>
+</head>
+<body>
+  <div class="box">
+  <h1 class="center">Уведомление о событии</h1>
+  <table>
+  <tr><td><dd class="code %(code)s">%(Code)s</dd></td></tr>
+  <tr><td class="caption">Файл заказа:</td></tr>
+  <tr><td><dd class="client">%(ClientName)s</dd></td></tr>
+  <tr><td><dd class="order">%(FileName)s</dd></td></tr>
+  <tr><td><span class="info">%(Date)s</span></td></tr>
+  <tr><td><div class="message">%(Message)s</div></td></tr>
+  <tr><td><div class="line"><hr></div></td></tr>
+  </table>
+  </div>
+</body>
+</html>
+'''
+_EMERGENCY_EOL = '\r\n'
+_EMERGENCY_LINK = 'http://172.19.9.69/bankperso'
 
 # Logger DB: OrderLog Database connection name
 _database = 'orderlog'
@@ -56,12 +143,33 @@ _database = 'orderlog'
 ##  Public Decorators
 ##  -----------------
 
+def connect(name):
+    global engines
+    engine = engines.get(name)
+    if engine is not None and not engine.conn.closed:
+        engine.close()
+
+    engines[name] = None
+    del engine
+
+    engines[name] = BankPersoEngine(name=name, connection=CONNECTION[name])
+
+def check_engine(engine, force=False):
+    if engine.engine_error or force:
+        name = getattr(engine, 'name')
+        connect(name)
+        engine = engines.get(name)
+
+    if IsDebug:
+        print_to(None, '!!! engine reopened[%s], error:%s' % (name, engine.engine_error))
+
+    return engine
+
 def before(name):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kw):
-            global engines
-            engines[name] = BankPersoEngine(None, connection=CONNECTION[name])
+            connect(name)
             return f(*args, **kw)
         return wrapper
     return decorator
@@ -134,7 +242,216 @@ class BaseEmitter(threading.Thread):
                 self._processed, self._found = app(limit=limit)
 
 
-class AbstractSource(object):
+class Orders:
+    
+    def __init__(self, params):
+        self._engine = None
+        self._orders = {}
+
+        self.params = params
+
+        self._check_datefrom = False
+
+    def _init_state(self, engine, config, **kw):
+        self._engine = engine
+
+        self._check_datefrom = config.get('check_datefrom') and True or False
+
+    @property
+    def keys(self):
+        #return self._orders.keys()
+        return sorted(self._orders, key=lambda x: self._orders[x]['FName'], reverse=True)
+
+    @property
+    def count(self):
+        return len(self._orders)
+
+    @property
+    def items(self):
+        return self._orders
+
+    @items.setter
+    def items(self, value):
+        self._orders = value
+
+    def _is_inactive_order(self, id):
+        order = self._orders[id]
+        return ORDER_INACTIVE in order and order.get(ORDER_INACTIVE) or False
+
+    def _get_param(self, name, as_dict=False):
+        if as_dict:
+            return dict(zip(('name', 'value'), (ORDER_PARAMS[name], self.params.get(name))))
+        return ORDER_PARAMS[name], self.params.get(name)
+
+    def exists(self, id):
+        return id in self.keys and True or False
+
+    def get(self, id):
+        return self._orders[id]
+
+    def set(self, id, value):
+        self._orders[id] = value
+
+    def getActiveItems(self):
+        return [x for x in self.keys if not self._is_inactive_order(x)]
+
+    def make_filter(self, date_from=None, delta=None, finalized=False):
+        """
+            Make filter `where` for orders selection SQL query.
+        """
+        where = ''
+
+        items = []
+
+        if self._check_datefrom or date_from:
+            datefrom = self._get_param('date_from', as_dict=True)
+            if date_from:
+                value = getDate(daydelta(date_from, delta), format=LOCAL_EASY_DATESTAMP)
+            else:
+                value = datefrom['value']
+
+            if checkDate(value, LOCAL_EASY_DATESTAMP):
+                complete = self._get_param('complete', as_dict=True)
+
+                # ===========================
+                # Check finalized orders only
+                # ===========================
+
+                if finalized:
+
+                    # ---------------------------------------
+                    # Date of Status earlier then `date_from`
+                    # ---------------------------------------
+
+                    items.append("(%s <= '%s 00:00' and %s in (%s))" % ( \
+                            datefrom['name'], 
+                            value,
+                            complete['name'], 
+                            ','.join(['%s' % x for x in complete['value'] if x])
+                        ))
+
+                # ==========================================
+                # Check orders in progress from a given date
+                # ==========================================
+
+                else:
+
+                    # -------------------------------------
+                    # Date of Status later then `date_from`
+                    # -------------------------------------
+
+                    items.append("(%s >= '%s 00:00' or %s not in (%s))" % ( \
+                            datefrom['name'], 
+                            value,
+                            complete['name'], 
+                            ','.join(['%s' % x for x in complete['value'] if x])
+                        ))
+
+                    # -------------------------------------------
+                    # Order RegisterDate earlier then `date_from`
+                    # -------------------------------------------
+
+                    if date_from:
+                        name, x = self._get_param('orderdate')
+                        value = getDate(date_from, format=LOCAL_EASY_DATESTAMP)
+                        items.append("%s <= '%s 23:59'" % (name, value))
+
+        # ------------------------------
+        # Orders for a given client only
+        # ------------------------------
+
+        name, value = self._get_param('client')
+        if value and value != '*':
+            items.append("%s='%s'" % (name, value))
+
+        if items:
+            where += ' and '.join(items)
+
+        return where
+
+    def refresh(self, date_from=None, delta=None, finalized=False, extra=None):
+        """
+            Get Bankperso Orders list.
+            
+            Class properties:
+                _engine    -- connected engine to BankDB
+                _orders    -- dict: orders mapped list: {FileID, FName...}, order is a dict
+
+            Keyword Arguments:
+                date_from  -- datetime: current date for orders sellections
+                delta      -- int: timestamp delta in days
+                finalized  -- boolean: build query for completed orders
+                extra      -- func: callable for extra refreshing of the order
+
+            Returns length of `active` orders (int).
+        """
+        engine = self._engine
+
+        orders = {}
+
+        order = 'FileID desc'
+        where = self.make_filter(date_from=date_from, delta=delta, finalized=finalized)
+        with_extra = extra is not None and callable(extra) and True or False
+
+        columns = ('FileID', 'FName', 'BankName', 'FileStatusID',)
+
+        active = []
+
+        cursor = engine.runQuery('orders', columns=columns, where=where, order=order, as_dict=True,
+                                 encode_columns=('BankName',),
+                                 distinct=True,
+                                 debug=IsDeepDebug)
+        if cursor:
+            for n, row in enumerate(cursor):
+                id = row['id'] = row['FileID']
+                row['date_from'] = date_from
+
+                order = None
+
+                if not id:
+                    continue
+                elif id not in self._orders:
+                    orders[id] = order = row
+                elif row['FileStatusID'] != self._orders[id]['FileStatusID'] and self._orders[id].get(ORDER_REFRESHED):
+                    self._orders[id][ORDER_REFRESHED] = False
+                    order = self._orders[id]
+
+                active.append(id)
+
+                if with_extra and order and not order.get(ORDER_REFRESHED):
+                    extra(order)
+
+        # ----------------------------------------
+        # Update orders state in class collections
+        # ----------------------------------------
+
+        self._orders.update(orders)
+
+        for id in self._orders:
+            self._orders[id][ORDER_INACTIVE] = id not in active
+
+        # ----------------------
+        # Check engine on errors
+        # ----------------------
+
+        if not cursor:
+            self._engine = check_engine(engine)
+
+        return len(active)
+
+    def _print(self, n, id):
+        order = self._orders.get(id)
+
+        if not order:
+            return
+
+        columns = ('FileID', ORDER_INACTIVE, ORDER_REFRESHED, 'FileStatusID', 'id', 'BankName', 'aliases', 'date_from', 'FName', 'keys',)
+        return '%03d: {%s}' % (
+            n, ', '.join(['%s: %s' % (x, str(order.get(x))) for x in columns]),
+            )
+
+
+class AbstractSource:
 
     def __init__(self, config, logger):
         self.config = config
@@ -153,12 +470,18 @@ class AbstractSource(object):
         self._engine = None
 
         self._filename = None
-        self._orders = {}
         self._files = {}
         self._lines = []
         self._message = ''
         self._seen = None
         self._callback = None
+        self._mailkeys = None
+
+        self.orders = None
+
+        self._delta_datefrom = [0, 0]
+        self._unresolved = []
+        self._n = 0
 
         self.finished = False
         self.stop = False
@@ -181,6 +504,15 @@ class AbstractSource(object):
         self.params['complete'] = self.config.get('complete') or COMPLETE_STATUSES
 
         self._callback = kw.get('callback')
+        self._delta_datefrom = self.config.get('delta_datefrom')
+
+        if not self._delta_datefrom or not isinstance(self._delta_datefrom, list) or len(self._delta_datefrom) != 2:
+            self._delta_datefrom = [-7, -30]
+
+        mailkeys = self.config.get('mailkeys')
+        self._mailkeys = isIterable(mailkeys) and mailkeys or mailkeys and list(mailkeys) or None
+
+        self.orders = Orders(self.params)
 
         self.stop = False
 
@@ -212,7 +544,9 @@ class AbstractSource(object):
 
         self._engine = engine
 
-        return self._execute(limit)
+        self.orders._init_state(self._engine, self.config)
+
+        return self.execute(limit)
 
     def is_ready(self):
         return engines and True or False
@@ -226,6 +560,21 @@ class AbstractSource(object):
     @after(_database)
     def _term(self):
         pass
+
+    ##  ---------------
+    ##  Private Members
+    ##  ---------------
+
+    def _beforeObserve(self, date_from=None):
+        """
+            Sets FSO initial Log-file pointers
+        """
+        self._files = {}
+        self._lines = []
+        self._message = ''
+
+        if IsDebug:
+            self.logger.out('seen: %s' % getDate(self._seen, format=DATE_STAMP))
 
     def _evolute_date(self, date_from):
         """
@@ -270,17 +619,6 @@ class AbstractSource(object):
 
         self._callback.refreshService()
 
-    def _beforeObserve(self, date_from=None):
-        """
-            Sets FSO initial Log-file pointers
-        """
-        self._files = {}
-        self._lines = []
-        self._message = ''
-
-        if IsDebug:
-            self.logger.out('seen: %s' % getDate(self._seen, format=DATE_STAMP))
-
     def _refresh_seen(self, seen):
         self._seen = seen
 
@@ -322,6 +660,9 @@ class AbstractSource(object):
             pass
 
     def _unresolved_lines(self, force=False):
+        """
+            Print unresolved lines
+        """
         if IsDeepDebug or force:
             items = []
 
@@ -337,22 +678,17 @@ class AbstractSource(object):
                 if filename != fname:
                     items.append('--> file: %s' % filename)
                     fname = filename
-                items.append(line)
+
+                items.append(line.rstrip())
 
             # -----------------
             # Orders collection
             # -----------------
 
             if lines > 0:
-                items.append('%s!!! orders: %d' % (cr, len(self._orders)))
-                columns = ('FileID', _INACTIVE, _REFRESHED, 'FileStatusID', 'id', 'BankName', 'aliases', 'date_from', 'FName', 'keys',)
-
-                for n, id in enumerate(sorted(self._orders.keys())):
-                    order = self._orders[id]
-                    items.append('%03d: {%s}' % ( \
-                        n, 
-                        ', '.join(['%s: %s' % (x, str(order.get(x))) for x in columns]),
-                    ))
+                items.append('%s!!! orders: %d' % (cr, self.orders.count))
+                for n, id in enumerate(self.orders.keys):
+                    items.append(self.orders._print(n, id))
 
             items.append(cr)
 
@@ -360,11 +696,332 @@ class AbstractSource(object):
 
         return len(self._lines)
 
-    ##  -------------
-    ##  Basic Members
-    ##  -------------
+    def _check_completed(self, date_from, func=None, **kw):
+        """
+            Explore `lines` for overstock.
+            Check all lines for finalized orders.
+        """
+        if func is None:
+            return
+        
+        orders = deepcopy(self.orders.items)
+        lines = self._lines[:]
 
-    def _execute(self, limit, func=None, **kw):
+        self.orders.items = {}
+        self.orders.refresh(date_from=date_from, delta=self._delta_datefrom[1])
+
+        if IsDebug:
+            print_to(None, '*** %s Check completed started, lines: %s, orders: %s [%s]' % (
+                     getTime(format=UTC_FULL_TIMESTAMP), len(lines), self.orders.count, self._n))
+
+        overstock = []
+
+        for n, id in enumerate(self.orders.keys):
+            order = self.orders.get(id)
+
+            # ---------------------------------------
+            # Check every line for the selected order
+            # ---------------------------------------
+
+            for i, line in enumerate(lines):
+                if i in overstock:
+                    continue
+
+                self._lines = [line]
+
+                # ----------------------------------------
+                # If matched, remove it (just overstocked)
+                # ----------------------------------------
+
+                if func(order, id, **kw):
+                    overstock.append(i)
+
+            if IsDeepDebug:
+                print_to(None, self.orders._print(n, id))
+
+        if overstock:
+            lines = [lines[i] for i in range(len(lines)) if i not in overstock]
+
+        if IsDeepDebug:
+            for i, line in enumerate(lines):
+                print_to(None, line)
+
+        if IsDebug:
+            print_to(None, '*** %s Check completed finished, lines: %s' % (
+                     getTime(format=UTC_FULL_TIMESTAMP), len(lines)))
+
+        self._lines = lines[:]
+        self.orders.items = deepcopy(orders)
+
+        del lines
+        del orders
+
+    def _formatted_dump(self, ob, title):
+        dump = '%s%s%s%s' % ('-'*19, cr, title, cr)
+
+        columns = self.formated_columns
+
+        if ob is not None:
+            info = []
+
+            for n, column in enumerate(columns):
+                if not (column and column in ob):
+                    continue
+                elif column in ('Date', 'Module', 'Code',):
+                    dump += '%s%s' % (ob[column], cr)
+                elif column == 'Message':
+                    dump += '%s%s' % (self.getLogMessage(ob), cr)
+                else:
+                    v = str(ob[column])
+                    info.append('%s:%s' % (column, v.strip()))
+
+            dump += ', '.join(info)+cr
+
+            info = []
+            info.append('%s:%s' % ('source_id', self.source_id))
+            info.append('%s:%s' % ('module_id', self.module_id))
+            info.append('%s:%s' % ('log_id', self.log_id))
+            info.append('%s:%s' % ('message_id', self.message_id))
+            info.append('%s:%s' % ('status', self.status))
+            info.append('%s:%s' % ('count', self.count))
+
+            dump += ', '.join(info)+cr
+
+        return dump
+
+    def _parse_datefrom(self, filename):
+        return None
+
+    ##  ---------------
+    ##  Logger Functions
+    ##  ---------------
+
+    def _after_launch(self, logs, order_params, **kw):
+        client, file_id, file_name = order_params
+
+        for ob in logs:
+            ob.update({
+                'bp_fileid'   : file_id,
+                'bp_filename' : file_name,
+                'client'      : client,
+            })
+
+    def _mail_emergency(self, ob):
+        addr_to = self.config.get('emergency')
+
+        if IsNoEmail or not (addr_to and ob.get('client') and ob.get('Code') in _EMERGENCY_CODES):
+            return 0
+
+        if self._mailkeys:
+            is_found = False
+            for key in self._mailkeys:
+                if key in ob['client'] or key in ob['bp_filename'] or key in ob['Message']:
+                    is_found = True
+                    break
+            if not is_found:
+                return 0
+
+        code = ob['Code'].strip()
+
+        props = {
+            'ClientName' : ob['client'], 
+            'FileName'   : ob['bp_filename'],
+            'FileID'     : ob['bp_fileid'],
+            'Date'       : ob['Date'],
+            'Message'    : ob['Message'],
+            'Code'       : code,
+            'code'       : code.lower(),
+            'server'     : self.config['ip'],
+            'log'        : ob['filename'],
+            'webperso'   : self.config.get('webperso') or _EMERGENCY_LINK
+        }
+
+        # -----------------
+        # Alarm to customer
+        # -----------------
+
+        alarms = self.config.get('alarms')
+
+        if alarms:
+            title = None
+
+            try:
+                title, alarm_to, key = alarms.split(':')
+            except:
+                pass
+
+            if title and key in ob['Message']:
+                subject = '%s: %s' % (title, code)
+                html = _EMERGENCY_EOL.join(_EMERGENCY_ALARM_HTML.split('\n')) % props
+
+                send_simple_mail(subject, html, alarm_to)
+
+        # -------------------------
+        # Notification to emergency
+        # -------------------------
+
+        subject = '%s %s' % (ob['client'], code)
+        html = _EMERGENCY_EOL.join(_EMERGENCY_HTML.split('\n')) % props
+
+        return send_simple_mail(subject, html, addr_to)
+
+    def _processed_log_item(self, ob, current_filename, with_mail=False):
+        """
+            Run scenario for a given Log-item.
+
+            Arguments:
+                ob               -- dict: line log object (Log-item)
+                current_filename -- str: current log filename
+
+            Keyword Arguments:
+                with_mail        -- boolean: mail to emergency
+        """
+        filename = current_filename
+
+        is_logged = False
+
+        # If Log-filename changed
+        if ob['filename'] != filename or 'Module' in ob:
+            filename = ob['filename']
+
+            if IsTrace:
+                print_to(None, filename+':')
+
+            # Check Module
+            # ~~~~~~~~~~~~
+            self.module_id = None
+            cname, cpath = self.getModuleInfo(filename, ob, as_list=True)
+            self.check_module(source_id=self.source_id, cname=cname, cpath=cpath)
+
+            # Check Log
+            # ~~~~~~~~~
+            self.log_id = None
+            cname = self.getLogInfo(filename, ob, as_list=True)
+            self.check_log(source_id=self.source_id, module_id=self.module_id, cname=cname)
+
+        # Check existing & Register Log item
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        self.message_id = None
+        self.registerLogItem(filename, ob)
+
+        if not self.status:
+            title = '!!! no status'
+
+        elif self.status in 'SMLB':
+            title = 'Error: DB-status is invalid[%s]' % self.status
+            
+        elif self.message_id is not None:
+            title = ''
+            
+            if self.status and self.status.startswith('ID:'):
+                title = 'New message[%s%s:%s]' % (self.status, self._message, ob['Code'])
+
+                is_logged = True
+
+            elif IsExistsTrace:
+                title = self.status
+
+        else:
+            title = 'Not registered! MessageID is null'
+
+        if with_mail and is_logged and self._mail_emergency(ob):
+            title += ' mailed'
+
+        if IsTrace and title:
+            print_to(None, self._formatted_dump(ob, title))
+
+            if IsDebug and not IsDisableOutput:
+                self.logger.out(title)
+
+        return is_logged, filename
+
+    def _pickup_logs(self, logs, **kw):
+        filename = kw.get('filename') or ''
+        with_mail = kw.get('with_mail') and True or False
+
+        done = 0
+
+        for ob in logs:
+            if 'exception' in ob:
+                if IsTrace:
+                    print_to(None, 'Exception: %s' % ob['exception'])
+                continue
+
+            is_logged, filename = self._processed_log_item(ob, filename, with_mail=with_mail)
+
+            if is_logged:
+                done += 1
+
+        return done
+
+    def _update_batch(self, row, keys):
+        def _update_key(name):
+            value = str(row[name])
+            if not value in keys:
+                keys.append(value)
+
+        _update_key('TID')
+        _update_key('TZ')
+
+    ##  -----------------
+    ##  Logger Attributes
+    ##  -----------------
+
+    def _observer_source(self):
+        root = self._log_config()['root']
+        return '%s%s' % (self.config.get('root'), root and '/'+root or '')
+
+    def _log_config(self):
+        """Override this method to populate `Source` Log-config"""
+        return None
+
+    def _log_mask(self, log_config, mode):
+        """Override this method to populate `Source` Log-config folder/file mask"""
+        return '|'.join(['([\\\\/]+%s)' % x for x in log_config[mode] if x]) or ''
+
+    def _log_regexes(self):
+        """Override this method to populate `Observer` file masks"""
+        log_config = self._log_config()
+        if log_config:
+            masks = { \
+                'root' : log_config['root'],
+                'dir'  : self._log_mask(log_config, 'dir'),
+                'file' : self._log_mask(log_config, 'file'),
+            }
+            regexes = [r'.*%(root)s%(dir)s%(file)s(?si)' % masks]
+        else:
+            regexes = [r'.*']
+
+        if IsDebug:
+            self.logger.out('regexes: %s' % regexes)
+
+        return regexes
+
+    def _is_matched_filename(self, filename):
+        """Override this method to check given Log-filename"""
+        return True
+
+    def _is_line_valid(self, line):
+        columns = line.split(self.split_by)
+        return line and len(columns) >= len(self.columns) and len(columns[-1]) > _MIN_MESSAGE_SIZE or False
+
+    def _is_suspended(self, filename, config):
+        suspend = config.get('suspend') or []
+        for x in suspend:
+            if x and x in filename:
+                return True
+        suppressed = [x.lower() for x in self.config.get('suppressed') or [] if x]
+        f = filename.lower()
+        for x in suppressed:
+            if x in f:
+                return True
+        return False
+
+    ##  --------------
+    ##  Public Members
+    ##  --------------
+
+    def execute(self, limit, func=None, **kw):
         """
             General Logger Scenario.
 
@@ -396,12 +1053,12 @@ class AbstractSource(object):
         # Get Orders for given Logger config params
         # -----------------------------------------
 
-        self.getOrders(date_from=date_from)
+        self.orders.refresh(date_from=date_from, delta=self._delta_datefrom[0])
 
-        orders = [x for x in self._orders.keys() if not self._is_inactive_order(x)]
+        orders = self.orders.getActiveItems()
 
-        for n, id in enumerate(sorted(orders)):
-            order = self._orders[id]
+        for n, id in enumerate(orders):
+            order = self.orders.get(id)
 
             # ---------------------------------------------------------
             # Pick up an Order Log-messages from the given `Source` FSO
@@ -442,239 +1099,6 @@ class AbstractSource(object):
         self.finished = True
 
         return _processed, _found
-
-    def _check_completed(self, date_from, func=None, **kw):
-        """
-            Explore `lines` for overstock.
-            Check all lines for finalized orders.
-        """
-        if func is None:
-            return
-        
-        orders = self._orders
-        lines = self._lines
-
-        self._orders = {}
-        self.getOrders(date_from=date_from, finalized=True)
-
-        overstock = []
-
-        for n, id in enumerate(sorted(self._orders.keys())):
-            order = self._orders[id]
-
-            # ---------------------------------------
-            # Check every line for the selected order
-            # ---------------------------------------
-
-            for i, line in enumerate(lines):
-                if i in overstock:
-                    continue
-
-                self._lines = [line]
-
-                # ----------------------------------------
-                # If matched, remove it (just overstocked)
-                # ----------------------------------------
-
-                if func(order, id, **kw):
-                    overstock.append(i)
-
-        if overstock:
-            lines = [lines[i] for i in range(len(lines)) if i not in sorted(overstock)]
-
-        self._lines = lines
-        self._orders = orders
-
-    def _formatted_dump(self, ob, title):
-        dump = '%s%s%s%s' % ('-'*19, cr, title, cr)
-
-        columns = self.formated_columns
-
-        if ob is not None:
-            info = []
-
-            for n, column in enumerate(columns):
-                if not (column and column in ob):
-                    continue
-                elif column in ('Date', 'Module', 'Code',):
-                    dump += '%s%s' % (ob[column], cr)
-                elif column == 'Message':
-                    dump += '%s%s' % (self.getLogMessage(ob), cr)
-                else:
-                    v = str(ob[column])
-                    info.append('%s:%s' % (column, v.strip()))
-
-            dump += ', '.join(info)+cr
-
-            info = []
-            info.append('%s:%s' % ('source_id', self.source_id))
-            info.append('%s:%s' % ('module_id', self.module_id))
-            info.append('%s:%s' % ('log_id', self.log_id))
-            info.append('%s:%s' % ('message_id', self.message_id))
-            info.append('%s:%s' % ('status', self.status))
-            info.append('%s:%s' % ('count', self.count))
-
-            dump += ', '.join(info)+cr
-
-        return dump
-
-    def _processed_log_item(self, ob, current_filename):
-        """
-            Run scenario for a given Log-item
-        """
-        filename = current_filename
-
-        is_logged = False
-
-        # If Log-filename changed
-        if ob['filename'] != filename or 'Module' in ob:
-            filename = ob['filename']
-
-            if IsTrace:
-                print_to(None, filename+':')
-
-            # Check Module
-            # ~~~~~~~~~~~~
-            self.module_id = None
-            cname, cpath = self.getModuleInfo(filename, ob, as_list=True)
-            self.check_module(source_id=self.source_id, cname=cname, cpath=cpath)
-
-            # Check Log
-            # ~~~~~~~~~
-            self.log_id = None
-            cname = self.getLogInfo(filename, ob, as_list=True)
-            self.check_log(source_id=self.source_id, module_id=self.module_id, cname=cname)
-
-        # Check existing & Register Log item
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        self.message_id = None
-        self.registerLogItem(filename, ob)
-
-        if not self.status:
-            title = '!!! no status'
-
-        elif self.status in 'SMLB':
-            title = 'Error: DB-status is invalid[%s]' % self.status
-            
-        elif self.message_id is not None:
-            title = ''
-            
-            if self.status and self.status.startswith('ID:'):
-                title = 'New message[%s%s]' % (self.status, self._message)
-
-                is_logged = True
-
-            elif IsExistsTrace:
-                title = self.status
-
-        else:
-            title = 'Not registered! MessageID is null'
-
-        if IsTrace and title:
-            print_to(None, self._formatted_dump(ob, title))
-
-            if IsDebug and not IsDisableOutput:
-                self.logger.out(title)
-
-        return is_logged, filename
-
-    def _pickup_logs(self, logs, **kw):
-        filename = kw.get('filename') or ''
-
-        done = 0
-
-        for ob in logs:
-            if 'exception' in ob:
-                if IsTrace:
-                    print_to(None, 'Exception: %s' % ob['exception'])
-                continue
-
-            is_logged, filename = self._processed_log_item(ob, filename)
-
-            if is_logged:
-                done += 1
-
-        return done
-
-    def _after_launch(self, logs, order_params):
-        client, file_id, file_name = order_params
-
-        for ob in logs:
-            ob.update({
-                'bp_fileid'   : file_id,
-                'bp_filename' : file_name,
-                'client'      : client,
-            })
-
-    def _observer_source(self):
-        root = self._log_config()['root']
-        return '%s%s' % (self.config.get('root'), root and '/'+root or '')
-
-    def _log_config(self):
-        """Override this method to populate `Source` Log-config"""
-        return None
-
-    def _log_mask(self, log_config, mode):
-        """Override this method to populate `Source` Log-config folder/file mask"""
-        return '|'.join(['([\\\\/]+%s)' % x for x in log_config[mode] if x]) or ''
-
-    def _log_regexes(self):
-        """Override this method to populate `Observer` file masks"""
-        log_config = self._log_config()
-        if log_config:
-            masks = { \
-                'root' : log_config['root'],
-                'dir'  : self._log_mask(log_config, 'dir'),
-                'file' : self._log_mask(log_config, 'file'),
-            }
-            regexes = [r'.*%(root)s%(dir)s%(file)s(?si)' % masks]
-        else:
-            regexes = [r'.*']
-
-        if IsDebug:
-            self.logger.out('regexes: %s' % regexes)
-
-        return regexes
-
-    def _is_inactive_order(self, id):
-        order = self._orders[id]
-        return _INACTIVE in order and order.get(_INACTIVE) or False
-
-    def _is_matched_filename(self, filename):
-        """Override this method to check given Log-filename"""
-        return True
-
-    def _is_line_valid(self, line):
-        columns = line.split(self.split_by)
-        return line and len(columns) >= len(self.columns) and len(columns[-1]) > _MIN_MESSAGE_SIZE or False
-
-    def _is_suspended(self, filename, config):
-        suspend = config.get('suspend') or []
-        for x in suspend:
-            if x and x in filename:
-                return True
-        suppressed = [x.lower() for x in self.config.get('suppressed') or []]
-        for x in suppressed:
-            if x and x in filename:
-                return True
-        return False
-
-    def _parse_datefrom(self, filename):
-        return None
-
-    def _get_order_param(self, name, as_dict=False):
-        if as_dict:
-            return dict(zip(('name', 'value'), (args[name], self.params.get(name))))
-        return args[name], self.params.get(name)
-
-    def _update_batch(self, row, keys):
-        def _update_key(name):
-            value = str(row[name])
-            if not value in keys:
-                keys.append(value)
-
-        _update_key('TID')
-        _update_key('TZ')
 
     def check_source(self, **kw):
         """
@@ -747,91 +1171,16 @@ class AbstractSource(object):
                 Stored procedure response.
                 If OK `LogID`
         """
+        engine = engines[_database]
         self.status = ''
-        cursor = engines[_database].runProcedure('orderlog-register-log-message', args, **kw)
+        cursor = engine.runProcedure('orderlog-register-log-message', args, **kw)
         if cursor:
             self.message_id = cursor[0][0]
             self.status = cursor[0][1]
         else:
             if IsDebug:
                 self.logger.out('!!! register_log_message, no cursor: %s' % str(args))
-
-    def make_filter(self, date_from=None, finalized=False):
-        """
-            Make filter `where` for orders selection SQL query.
-            Parameters are defined in :SPL:
-
-            Arguments:
-                date_from  -- datetime: timestamp of an order
-                finalized  -- boolean: build query for completed orders
-        """
-        where = ''
-
-        items = []
-
-        if self.config.get('check_datefrom') or date_from:
-            datefrom = self._get_order_param('date_from', as_dict=True)
-            if date_from:
-                value = getDate(date_from, format=LOCAL_EASY_DATESTAMP)
-            else:
-                value = datefrom['value']
-
-            if checkDate(value, LOCAL_EASY_DATESTAMP):
-                complete = self._get_order_param('complete', as_dict=True)
-
-                # ===========================
-                # Check finalized orders only
-                # ===========================
-
-                if finalized:
-
-                    # ---------------------------------------
-                    # Date of Status earlier then `date_from`
-                    # ---------------------------------------
-
-                    items.append("(%s <= '%s 00:00' and %s in (%s))" % ( \
-                            datefrom['name'], 
-                            value,
-                            complete['name'], 
-                            ','.join(['%s' % x for x in complete['value'] if x])
-                        ))
-
-                # ==========================================
-                # Check orders in progress from a given date
-                # ==========================================
-
-                else:
-
-                    # -------------------------------------
-                    # Date of Status later then `date_from`
-                    # -------------------------------------
-
-                    items.append("(%s >= '%s 00:00' or %s not in (%s))" % ( \
-                            datefrom['name'], 
-                            value,
-                            complete['name'], 
-                            ','.join(['%s' % x for x in complete['value'] if x])
-                        ))
-
-                    # -------------------------------------------
-                    # Order RegisterDate earlier then `date_from`
-                    # -------------------------------------------
-
-                    name, x = self._get_order_param('orderdate')
-                    items.append("%s <= '%s 23:59'" % (name, value))
-
-        # ------------------------------
-        # Orders for a given client only
-        # ------------------------------
-
-        name, value = self._get_order_param('client')
-        if value and value != '*':
-            items.append("%s='%s'" % (name, value))
-
-        if items:
-            where += ' and '.join(items)
-
-        return where
+                check_engine(engine, force=True)
 
     def getLogMessage(self, ob):
         if 'Message' not in ob:
@@ -867,7 +1216,7 @@ class AbstractSource(object):
         return self.count
 
     def registerLogItem(self, filename, ob):
-        return self.register_log_message((
+        self.register_log_message((
             self.source_id,
             self.module_id,
             self.log_id,
@@ -885,59 +1234,6 @@ class AbstractSource(object):
             getDate(getToday(), format=UTC_FULL_TIMESTAMP)
         ))
 
-    def getOrders(self, date_from=None, finalized=False):
-        """
-            Get Bankperso Orders list.
-            
-            Class properties:
-                _engine    -- connected engine to BankDB
-                _orders    -- selected orders list: FileID, FName...
-
-            Arguments:
-                date_from  -- datetime: current date for orders sellections
-                finalized  -- boolean: build query for completed orders
-
-            Returns length of `active` orders (int).
-        """
-        engine = self._engine
-
-        orders = {}
-
-        order = 'FileID'
-        where = self.make_filter(date_from=date_from, finalized=finalized)
-
-        columns = ('FileID', 'FName', 'BankName', 'FileStatusID',)
-
-        active = []
-
-        cursor = engine.runQuery('orders', columns=columns, where=where, order=order, as_dict=True,
-                                 encode_columns=('BankName',),
-                                 distinct=True)
-        if cursor:
-            for n, row in enumerate(cursor):
-                id = row['id'] = row['FileID']
-                row['date_from'] = date_from
-
-                if not id:
-                    continue
-                elif not id in self._orders:
-                    orders[id] = row
-                elif row['FileStatusID'] != self._orders[id]['FileStatusID'] and self._orders[id].get(_REFRESHED):
-                    self._orders[id][_REFRESHED] = False
-
-                active.append(id)
-
-        # ----------------------------------------
-        # Update orders state in class collections
-        # ----------------------------------------
-
-        self._orders.update(orders)
-
-        for id in self._orders:
-            self._orders[id][_INACTIVE] = id not in active
-
-        return len(active)
-
     def pickupLogs(self, order, id):
         """
             Pick up Order Log-messages.
@@ -949,7 +1245,9 @@ class AbstractSource(object):
             Returns:
                 _found -- int: number of Log-messages found
         """
-        logs = self.getLogs(order, date_format=UTC_FULL_TIMESTAMP, case_insensitive=True, no_span=True)
+        case_insensitive = self.config.get('case_insensitive') or False
+
+        logs = self.getLogs(order, date_format=UTC_FULL_TIMESTAMP, case_insensitive=case_insensitive, no_span=True)
 
         if IsTrace and len(logs) > 0:
             print_to(None, '%sID:%s LOGS[%s]:%s' % (cr, id, len(logs), cr))
@@ -969,9 +1267,12 @@ class AbstractSource(object):
 
         self._engine = engine
 
+        self.orders._init_state(self._engine, self.config)
+
         date_from = getDate(self.params['date_from'], format=LOCAL_EASY_DATESTAMP, is_date=True)
         check_filename = self.config.get('check_filename') or False
         decoder_trace = self.config.get('decoder_trace') or False
+        case_insensitive = self.config.get('case_insensitive') or False
 
         client = self.config.get('client')
 
@@ -993,7 +1294,7 @@ class AbstractSource(object):
         # Get Orders for given Logger config params
         # -----------------------------------------
 
-        self.getOrders(date_from=date_from)
+        self.orders.refresh(date_from=date_from, delta=self._delta_datefrom[0])
 
         # -----------------
         # Observe Log-files
@@ -1054,7 +1355,7 @@ class AbstractSource(object):
             # Refresh Orders collection
             # -------------------------
 
-            if self.getOrders(date_from=self._parse_datefrom(filename)) == 0:
+            if self.orders.refresh(date_from=self._parse_datefrom(filename), extra=self.refreshOrder) == 0:
                 if IsDebug:
                     self.logger.out('inactive: %s' % filename)
                 continue
@@ -1092,10 +1393,10 @@ class AbstractSource(object):
                 # Check Order via given line
                 # --------------------------
 
-                orders = [x for x in self._orders.keys() if not self._is_inactive_order(x)]
+                orders = self.orders.getActiveItems()
 
-                for i, id in enumerate(sorted(orders)):
-                    order = self._orders[id]
+                for i, id in enumerate(orders):
+                    order = self.orders.get(id)
 
                     if not id in _found:
                         _found[id] = 0
@@ -1104,7 +1405,7 @@ class AbstractSource(object):
                     # Match Log-line with an Order
                     # ----------------------------
 
-                    logged = self.launchEvent(order, id, case_insensitive=True, no_span=True)
+                    logged = self.launchEvent(order, id, case_insensitive=case_insensitive, no_span=True)
 
                     if not logged:
                         continue
@@ -1141,12 +1442,18 @@ class AbstractSource(object):
     ##  Observer Consume Members
     ##  ------------------------
 
+    def refreshOrder(self, order):
+        pass
+
+    def launchEvent(self, order, id, **kw):
+        pass
+
     def watch(self, event):
         """
             Observer supplies FSO path for Log-file which logged some new messages.
             We should read that new Log-lines, sort its by `Order` and register in DB in case of success.
             
-            It's laded by recurring lines.
+            It's loaded by recurring lines.
 
             Class items:
                 self._files -- dict: FSO pointers for launched Log-files
@@ -1160,8 +1467,11 @@ class AbstractSource(object):
         if not (filename and self._is_matched_filename(filename)):
             self._filename = None
 
-            if IsTrace and IsDebug:
-                print_to(None, '!!! no matched filename[%s]: %s' % (filename, repr(event)))
+            if IsTrace and IsDeepDebug:
+                print_to(None, '*** %s no matched filename: [%s]' % (
+                    getDate(getToday(), format=UTC_FULL_TIMESTAMP),
+                    filename, #repr(event)
+                    ))
 
             return
 
@@ -1178,8 +1488,7 @@ class AbstractSource(object):
             self._lines = []
 
         checkfile(filename, 'rb', default_unicode, None, [], None, 'OBSERVER', decoder_trace=decoder_trace,
-                  files=self._files, 
-                  lines=self._lines,
+                  files=self._files, lines=self._lines,
                   globals=self.config,
                   )
 
@@ -1251,6 +1560,46 @@ class AbstractSource(object):
         if IsDebug:
             self.logger.out('>>> file moved from: %s to: %s' % (filename, new))
 
+    def lanchUnresolved(self, date_from=None, case_insensitive=None, force=None):
+        if not self._lines or len(self._lines) == 0:
+            return
+
+        if date_from is None:
+            date_from = self._seen
+        if case_insensitive is None:
+            case_insensitive = self.config.get('case_insensitive') or False
+
+        self._check_completed(date_from, func=self.launchEvent,
+                              date_format=UTC_FULL_TIMESTAMP, case_insensitive=case_insensitive, no_span=True,
+                              no_pickup=False)
+
+        if IsDebug:
+            self.logger.out('*** Overstock: %d' % len(self._lines))
+
+        n = len(self._lines)
+
+        if not n:
+            pass
+        elif n > MAX_UNRESOLVED_LINES[1] or len(self._unresolved) > _CHECK_UNRESOLVED_LIMIT:
+            force = True
+        elif self._unresolved and self._unresolved[-1] == n:
+            self._unresolved.append(n)
+        else:
+            self._unresolved = [n]
+
+        self._n = n
+
+        if force:
+            self._lines = []
+
+            if IsDebug:
+                self.logger.out('*** Overstock: reset')
+
+            self._unresolved = []
+            self._n = 0
+        else:
+            self._unresolved_lines(force=force)
+
     def launchObserverEvent(self):
         """
             Consume the watched Observer event.
@@ -1260,12 +1609,13 @@ class AbstractSource(object):
         """
         if not (self._filename and self._lines):
 
-            if IsTrace and IsDebug:
+            if IsTrace and IsDeepDebug:
                 print_to(None, '!!! no lanched: %s, lines: [%d]' % (self._filename, len(self._lines)))
 
             return 0
 
         date_from = self._parse_datefrom(self._filename)
+        case_insensitive = self.config.get('case_insensitive') or False
 
         # ----------------------------
         # Check Current Date evolution
@@ -1277,36 +1627,26 @@ class AbstractSource(object):
         # Launch Event
         # ------------
 
-        _processed, _found = self._execute(0, func=self.launchEvent, date_from=date_from,
-                                           date_format=UTC_FULL_TIMESTAMP, case_insensitive=True, no_span=True, 
-                                           observer=True)
+        _processed, _found = self.execute(0, func=self.launchEvent, 
+                                          date_from=date_from, date_format=UTC_FULL_TIMESTAMP, 
+                                          case_insensitive=case_insensitive, 
+                                          no_span=True, 
+                                          observer=True, 
+                                          unresolved=True, 
+                                          with_mail=True,
+                                          )
 
-        logged = _found and sum([v for k,v in _found.items()]) or 0
+        logged = _found and sum([v for k, v in _found.items()]) or 0
 
         if IsDebug:
             self.logger.out('*** Logged: %d' % logged)
 
         n = len(self._lines)
+
         force = False
 
-        if n > MAX_UNRESOLVED_LINES[1]:
-            force = True #IsDeepDebug and True or False
-
-        elif n > MAX_UNRESOLVED_LINES[0] and n%MAX_UNRESOLVED_LINES[2] == 0:
-            self._check_completed(date_from, func=self.launchEvent,
-                                  date_format=UTC_FULL_TIMESTAMP, case_insensitive=True, no_span=True,
-                                  no_pickup=False)
-
-            if IsDebug:
-                self.logger.out('*** Overstock: %d' % len(self._lines))
-
-        self._unresolved_lines(force=force)
-
-        if force:
-            self._lines = []
-
-            if IsDebug:
-                self.logger.out('*** Overstock: reset')
+        if n > MAX_UNRESOLVED_LINES[0] and n - self._n > MAX_UNRESOLVED_LINES[2]:
+            self.lanchUnresolved(date_from, case_insensitive, force=force)
 
         return logged 
 
@@ -1327,15 +1667,16 @@ def observer_trace(message, lock, event=None):
 
 class LogConsumer(threading.Thread):
     
-    def __init__(self, group=None, target=None, name=None,
-                 args=(), kwargs=None, daemon=None):
-        threading.Thread.__init__(self, group=group, target=target, name=name,
-                                  daemon=daemon)
+    def __init__(self, group=None, target=None, name=None, args=(), kwargs=None, daemon=None):
+        threading.Thread.__init__(self, group=group, target=target, name=name, daemon=daemon)
+        #super(LogConsumer, self).__init__(group=group, target=target, name=name, daemon=daemon)
+
         self._should_be_run = True
         self._consumer = len(args) > 0 and args[0] or kwargs and kwargs.get('consumer')
         self._producer = len(args) > 1 and args[1] or kwargs and kwargs.get('producer')
         self._lock = len(args) > 2 and args[2] or kwargs and kwargs.get('lock')
         self._logger = len(args) > 3 and args[3] or kwargs and kwargs.get('logger')
+        self._sleep = len(args) > 4 and args[4] or kwargs and kwargs.get('sleep') or 1
 
         if IsDebug:
             self._logger.out('observer init')
@@ -1353,32 +1694,42 @@ class LogConsumer(threading.Thread):
         if IsDebug:
             self._logger.out('observer run[%s]' % self.ident)
 
+        try:
+            self.process()
+        except:
+            if IsPrintExceptions:
+                print_exception()
+
+    def process(self):
+        n = 0
         while self._should_be_run:
-            time.sleep(1)
+            time.sleep(self._sleep)
 
             if IsObserverTrace and IsDeepDebug:
                 observer_trace('observer attempts to get event', self._lock)
 
             event = None
 
-            try:
-                with self._lock:
-                    if not self._producer.is_empty():
-                        event = self._producer.next_event()
-                        self._consumer.watch(event)
-                    else:
-                        continue
+            with self._lock:
+                if not self._producer.is_empty():
+                    event = self._producer.next_event()
+                elif n < _CHECK_UNRESOLVED_LIMIT:
+                    n += 1
+                    continue
+                else:
+                    self._consumer.lanchUnresolved()
+                    n = 0
+                    continue
 
-                if IsObserverTrace:
-                    observer_trace('extracted event', self._lock, event=event)
+            self._consumer.watch(event)
 
-                logged = self._consumer.launchObserverEvent()
+            if IsObserverTrace:
+                observer_trace('extracted event', self._lock, event=event)
 
-                with self._lock:
-                    done_event = self._producer.pop()
+            logged = self._consumer.launchObserverEvent()
 
-            except:
-                print_exception()
+            with self._lock:
+                done_event = self._producer.pop()
 
             if event.key != done_event.key:
                 self._logger.out('!!! check observer: %s' % repr(event))
@@ -1404,14 +1755,40 @@ class LogProducer(RegexMatchingEventHandler):
         self._lock = lock
         self._source = kw.get('source')
         self._logger = kw.get('logger')
+        
+        self._watch_everything = kw.get('watch_everything') or False
 
         self._stack = []
+
+        self._watched = None
+        self._timestamp = getToday()
 
         if IsDebug:
             self._logger.out('LogProducer[%s] activated' % self._source)
 
+    @property
+    def timestamp(self):
+        return self._timestamp
+
+    def stop(self):
+        if IsDebug:
+            self._logger.out('LogProducer stop')
+
+        with self._lock:
+            self._stack = []
+
+        if IsDebug:
+            self._logger.out('>>> stack is%sreleased, the latest event: %s' % (
+                not self.is_empty() and ' not ' or ' ', 
+                getDate(self.timestamp, UTC_FULL_TIMESTAMP)))
+
     def exists(self, event):
-        return False #event.key in [e.key for e in self._stack]
+        """
+            Check `watched` event key with the current one.
+            NOTE! Simultaneously produced events on the given object is possible.
+        """
+        index = self._watched and self._watched.key == event.key and 1 or 0
+        return event.key in [e.key for i, e in enumerate(self._stack) if i >= index]
 
     def is_empty(self):
         return True if not self._stack or len(self._stack) == 0 else False
@@ -1419,14 +1796,18 @@ class LogProducer(RegexMatchingEventHandler):
     def push(self, event):
         """
             Register given event in the Producer queue.
+            NOTE! Watchdog Observer pushes duplicated `on_modified` events! Why?
 
             Arguments:
                 event        -- FileSystemEvent: observer handler event
 
-            Event atributes:
+            Event attributes:
                 event_type   -- string: The type of the event as a string: 'moved:deleted:created:modified'
                 src_path     -- string: FSO path of the file system object that triggered this event
                 is_directory -- bool: True if event was emitted for a directory, False otherwise
+
+            Config settings:
+                watch_everything -- bool: if True, register all events
 
             Properies:
                 key          -- tuple: (self.event_type, self.src_path, self.is_directory)
@@ -1435,8 +1816,9 @@ class LogProducer(RegexMatchingEventHandler):
             return
 
         with self._lock:
-            if not self.exists(event):
+            if self._watch_everything or not self.exists(event):
                 self._stack.append(event)
+                self._timestamp = getToday()
 
                 if IsObserverTrace:
                     observer_trace('registered a new event', self._lock, event=event)
@@ -1492,10 +1874,12 @@ class LogProducer(RegexMatchingEventHandler):
         """
             Return event which is next in the queue, but not extract it
         """
-        return self._stack[0]
+        self._watched = self._stack[0]
+        return self._watched
 
     def pop(self):
         """
             Extract the first event from the Producer queue (FIFO)
         """
+        self._watched = None
         return self._stack.pop(0)

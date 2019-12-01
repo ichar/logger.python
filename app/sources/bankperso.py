@@ -1,5 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 
+from copy import deepcopy
+
 from . import *
 from ..worker import perso_log_config, check_perso_log, getPersoLogInfo
 
@@ -85,6 +87,11 @@ class Source(AbstractSource):
         """
             Populates `Source` Log-config from `worker.py` module
         """
+        log_root = self.config.get('log_root')
+        if log_root:
+            config = deepcopy(perso_log_config)
+            config['root'] = log_root
+            return config
         return perso_log_config
 
     def _is_matched_filename(self, filename):
@@ -124,7 +131,7 @@ class Source(AbstractSource):
         file_name = order.get('FName')
         client = order.get('BankName')
 
-        refreshed = order.get('_refreshed', False)
+        refreshed = order.get(ORDER_REFRESHED, False)
         if kw.get('observer'):
             refreshed = refreshed if not self.config.get('forced_refresh') else False
 
@@ -162,7 +169,7 @@ class Source(AbstractSource):
                 for n, row in enumerate(cursor):
                     self._update_batch(row, keys)
 
-                order['_refreshed'] = len(cursor) > 0
+                order[ORDER_REFRESHED] = len(cursor) > 0
 
             dates = (date_from, date_to,)
 
@@ -175,14 +182,19 @@ class Source(AbstractSource):
         else:
             aliases = order.get('aliases') or []
 
-        order['keys'] = keys
-        order['aliases'] = aliases
+        if not refreshed:
+            order['keys'] = keys
+            order['aliases'] = aliases
 
         return config, (client, file_id, file_name,), (keys, columns, dates, aliases, split_by,)
 
     ##  ------
     ##  Public
     ##  ------
+
+    def refreshOrder(self, order):
+        self._make_logger_params(order)
+        order[ORDER_REFRESHED] = True
 
     def getLogs(self, order, **kw):
         """
@@ -252,6 +264,7 @@ class Source(AbstractSource):
                         fmt=DEFAULT_DATETIME_PERSOLOG_FORMAT, 
                         date_format=UTC_FULL_TIMESTAMP,
                         case_insensitive=kw.get('case_insensitive'),
+                        unresolved=kw.get('unresolved'),
                         no_span=kw.get('no_span'),
                         lines=self._lines,
                         globals=self.config,
@@ -268,3 +281,4 @@ class Source(AbstractSource):
         logged = self._pickup_logs(logs, **kw)
 
         return logged
+

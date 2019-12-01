@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 
-product_version = '1.20, 2017-11-01'
+product_version = '1.74, 2019-06-05 with cp1251 (Python3)'
 
 #########################################################################################
 
@@ -31,8 +31,5 @@ MAX_TITLE_WORD_LEN = 50
 MAX_XML_BODY_LEN = 1024*100
 MAX_XML_TREE_NODES = 100
 MAX_LOGS_LEN = 999
-MAX_UNRESOLVED_LINES = (9, 99, 10)
 MAX_CARDHOLDER_ITEMS = 9999
 EMPTY_VALUE = '...'
-
-COMPLETE_STATUSES = (62, 64, 98, 197, 198, 201, 202, 203, 255,)

@@ -61,6 +61,8 @@ def _pout(s, **kw):
 logger = Logger(False, encoding=default_encoding)
 
 def make_config(source, encoding=default_encoding):
+    global config
+
     with open(source, 'r', encoding=encoding) as fin:
         for line in fin:
             s = line
@@ -73,8 +75,13 @@ def make_config(source, encoding=default_encoding):
             key = x[0].strip()
             value = x[1].strip()
 
-            if key == 'suppressed':
+            if not key:
+                continue
+            elif key == 'suppressed':
                 value = list(filter(None, value.split(':')))
+            elif key == 'delta_datefrom':
+                value = list(filter(None, value.split(':')))
+                value = [int(x) for x in value]
             elif '|' in value:
                 value = value.split('|')
             elif value.lower() in 'false:true':
@@ -94,14 +101,17 @@ def start_observer(app, **kw):
 
     lock = threading.Lock()
 
-    source = app._observer_source()
+    sleep = float(config.get('sleep') or 1)
+    watch_everything = config.get('watch_everything')
 
+    source = app._observer_source()
     app._beforeObserve()
 
-    producer = LogProducer(app, lock, source=source, logger=logger)
-    
-    consumer = LogConsumer(args=(app, producer, lock, logger,))
+    producer = LogProducer(app, lock, source=source, logger=logger, watch_everything=watch_everything)
+    consumer = LogConsumer(args=(app, producer, lock, logger, sleep))
     consumer.start()
+
+    observer_found = None
 
     try:
         observer = Observer(timeout=0.5)

@@ -743,7 +743,8 @@ for item in database_config:
 
 class BankPersoEngine():
     
-    def __init__(self, user=None, connection=None):
+    def __init__(self, name=None, user=None, connection=None):
+        self.name = name or 'default'
         self.connection = connection or default_connection
         self.engine = create_engine('mssql+pymssql://%(user)s:%(password)s@%(server)s' % self.connection)
         self.conn = self.engine.connect()
@@ -751,7 +752,7 @@ class BankPersoEngine():
         self.user = user
 
         if IsDeepDebug:
-            print('>>> open connection')
+            print('>>> open connection[%s]' % self.name)
 
     def getReferenceID(self, name, key, value, tid='TID'):
         id = None
@@ -837,6 +838,9 @@ class BankPersoEngine():
         if IsDeepDebug:
             print('>>> %s' % sql)
 
+        if kw.get('debug'):
+            print_to(None, '>>> %s' % sql)
+
         rows = []
 
         encode_columns = kw.get('encode_columns') or []
@@ -907,6 +911,6 @@ class BankPersoEngine():
         self.conn.close()
 
         if IsDeepDebug:
-            print('>>> close connection')
+            print('>>> close connection[%s]' % self.name)
 
         self.dispose()

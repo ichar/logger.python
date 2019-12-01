@@ -55,7 +55,8 @@ perso_log_config = { \
     ),
     'ignore'  : ( \
         'не может быть номером задания (PersID)',
-        'Не найдено ни одного файла соответствующего файлу'
+        'Не найдено ни одного файла соответствующего файлу',
+        'не найден входной каталог',
     ),
 }
 
@@ -155,6 +156,116 @@ def set_globals(config):
 #       decoder_trace     -- boolean: argument of `checkfile`, prints decoder errors
 #
 
+class Logger():
+    def __init__(self, to_file=None, encoding=default_unicode, mode='w+', bom=True, end_of_line=EOL):
+        self.is_to_file = to_file and 1 or 0
+        self.encoding = encoding
+        self.fo = None
+        self.end_of_line = end_of_line
+
+        if IsDisableOutput and to_file:
+            pass
+        elif to_file:
+            self.fo = codecs.open(to_file, encoding=self.encoding, mode=mode)
+            if bom:
+                self.fo.write(codecs.BOM_UTF8.decode(self.encoding))
+            self.out(to_file, console_forced=True)  # _pout('--> %s' % to_file)
+        else:
+            pass
+
+    def get_to_file(self):
+        return self.fo
+
+    def set_default_encoding(self, encoding=default_unicode):
+        if sys.getdefaultencoding() == 'ascii':
+            reload(sys)
+            sys.setdefaultencoding(encoding)
+        _pout('--> %s' % sys.getdefaultencoding())
+
+    def out(self, line, console_forced=False, without_decoration=False):
+        if not line:
+            return
+        elif console_forced or not (self.fo or self.is_to_file):
+            mask = '%s' % (not without_decoration and '--> ' or '')
+            try:
+                _pout('%s%s' % (mask, line))
+            except:
+                if is_v3:
+                    pass
+                elif type(line) is UnicodeType:
+                    v = ''
+                    for x in line:
+                        try:
+                            _pout(x, end='')
+                            v += x.encode(default_encoding, 'ignore')
+                        except:
+                            v += '?'
+                    _pout('')
+                else:
+                    _pout('%s%s' % (mask, line.decode(default_encoding, 'ignore')))
+        elif IsDisableOutput:
+            return
+        else:
+            if type(line) in StringTypes:
+                try:
+                    self.fo.write(line)
+                except:
+                    if is_v3:
+                        return
+                    try:
+                        self.fo.write(unicode(line, self.encoding))
+                    except:
+                        try:
+                            self.fo.write(line.decode(default_encoding))  # , 'replace'
+                        except:
+                            raise
+                if not line == self.end_of_line:
+                    self.fo.write(self.end_of_line)
+
+    def progress(self, line=None, mode='continue'):
+        if mode == 'start':
+            _pout('--> %s:' % (line or ''), end=' ')
+        elif mode == 'end':
+            _pout('', end='\n')
+        else:
+            _pout('#', end='', flush=True)
+
+    def close(self):
+        if IsDisableOutput:
+            return
+        if not self.fo:
+            return
+        self.fo.close()
+
+def setup_console(sys_enc=default_unicode):
+    """
+    Set sys.defaultencoding to `sys_enc` and update stdout/stderr writers to corresponding encoding
+    .. note:: For Win32 the OEM console encoding will be used istead of `sys_enc`
+    http://habrahabr.ru/post/117236/
+    http://www.py-my.ru/post/4bfb3c6a1d41c846bc00009b
+    """
+    global ansi
+    reload(sys)
+
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            enc = "cp%d" % ctypes.windll.kernel32.GetOEMCP()
+        else:
+            enc = (sys.stdout.encoding if sys.stdout.isatty() else
+                   sys.stderr.encoding if sys.stderr.isatty() else
+                   sys.getfilesystemencoding() or sys_enc)
+
+        sys.setdefaultencoding(sys_enc)
+
+        if sys.stdout.isatty() and sys.stdout.encoding != enc:
+            sys.stdout = codecs.getwriter(enc)(sys.stdout, 'replace')
+
+        if sys.stderr.isatty() and sys.stderr.encoding != enc:
+            sys.stderr = codecs.getwriter(enc)(sys.stderr, 'replace')
+    except:
+        pass
+
 ## ==================================================== ##
 
 def getBOM(encoding):
@@ -181,7 +292,7 @@ def _findkey(line, key, **kw):
     no_span = kw.get('no_span') and True or False
     
     if case_insensitive:
-        n = line.lower().find(key)
+        n = line.lower().find(key.lower())
     else:
         n = line.find(key)
     
@@ -239,6 +350,10 @@ def openfile(filename, mode='r', encoding=default_encoding, use_codecs=False):
 def closefile(fin):
     if fin and not fin.closed:
         fin.close()
+
+def is_valid_line(line, is_bytes):
+    keys = is_bytes and (b'-->', b'==>', b'>>>',) or ('-->', '==>', '>>>',)
+    return line and len([1 for key in keys if key not in line]) == len(keys) and True or False
 
 def checkfile(filename, mode, encoding, logs, keys, getter, msg, **kw):
     """
@@ -330,12 +445,19 @@ def checkfile(filename, mode, encoding, logs, keys, getter, msg, **kw):
             size = 0
             pointer = fin.tell()
 
+            if pointer == os.path.getsize(filename):
+                break
+
             try:
                 line = fin.readline()
                 size = len(line)
                 num_line += 1
 
-                info = '%d:%d' % (num_line, pointer)
+                if not is_valid_line(line, is_bytes):
+                    continue
+
+                info = '%d:%d:%d' % (num_line, size, pointer)
+                line_save = line
                 #
                 # Decode bytes as string with more preffered encoding
                 #
@@ -345,10 +467,10 @@ def checkfile(filename, mode, encoding, logs, keys, getter, msg, **kw):
                 # Check end of the stream
                 #
                 if not line:
-                    if pointer == fin.tell():
-                        break
-                    else:
-                        continue
+                    if size > 0:
+                        if IsDeepDebug and IsLogTrace:
+                            print_to(None, '!!! NO LINE DECODED[%s]: %s %s' % (filename, info, line_save))
+                    continue
                 if IsLinesOnly:
                     lines.append((filename, line,))
                     num_logged += 1
@@ -360,8 +482,11 @@ def checkfile(filename, mode, encoding, logs, keys, getter, msg, **kw):
                 #
                 # Search keys and add a new item to the logs-collection
                 #
-                num_logged += checkline(line, logs, keys, getter, 
-                    token=token, unique=unique, with_count=with_count, case_insensitive=case_insensitive, no_span=no_span)
+                logged = checkline(line, logs, keys, getter, 
+                                   token=token, unique=unique, with_count=with_count, case_insensitive=case_insensitive, no_span=no_span)
+
+                if logged > 0:
+                    num_logged += logged
 
             except (ValueError, UnicodeError):
                 if IsLogTrace:
@@ -437,12 +562,19 @@ def lines_emitter(filename, mode, encoding, msg, **kw):
             size = 0
             pointer = fin.tell()
 
+            if pointer == os.path.getsize(filename):
+                break
+
             try:
                 line = fin.readline()
                 size = len(line)
                 num_line += 1
 
-                info = '%d:%d' % (num_line, pointer)
+                if not is_valid_line(line, is_bytes):
+                    continue
+
+                info = '%d:%d:%d' % (num_line, size, pointer)
+                line_save = line
                 #
                 # Decode bytes as string with more preffered encoding
                 #
@@ -452,10 +584,10 @@ def lines_emitter(filename, mode, encoding, msg, **kw):
                 # Check end of the stream
                 #
                 if not line:
-                    if pointer == fin.tell():
-                        break
-                    else:
-                        continue
+                    if size > 0:
+                        if IsDebug or IsLogTrace:
+                            print_to(None, '!!! NO LINE DECODED[%s]: %s\n%s' % (filename, info, line_save))
+                    continue
                 #
                 # Generate a new line output
                 #
@@ -463,17 +595,18 @@ def lines_emitter(filename, mode, encoding, msg, **kw):
 
             except (ValueError, UnicodeError):
                 if IsLogTrace:
-                    print_to(None, '>>> INVALID %s LINE[%s]: %s %s' % (msg, filename, info, line))
+                    print_to(None, '>>> INVALID %s LINE[%s]: %s\n%s' % (msg, filename, info, line))
                 if IsPrintExceptions:
                     print_exception()
                 if size > 0 and fin.tell() - pointer > size:
                     fin.seek(pointer+size, 0)
             except:
-                if IsDeepDebug and IsLogTrace:
-                    print_to(None, '!!! EMITTER ERROR[%s]: %s %s' % (filename, info, line))
+                if IsLogTrace:
+                    print_to(None, '!!! EMITTER ERROR[%s]: %s\n%s' % (filename, info, line))
                 if IsPrintExceptions:
-                    print_exception()
-                raise
+                    print_exception(1)
+                else:
+                    raise
 
     except EOFError:
         pass
@@ -566,8 +699,13 @@ def checkline(line, logs, keys, getter, **kw):
     return logged
 
 def mdate(filename):
-    t = os.path.getmtime(filename)
-    return datetime.datetime.fromtimestamp(t)
+    try:
+        t = os.path.getmtime(filename)
+        return datetime.datetime.fromtimestamp(t)
+    except:
+        if IsPrintExceptions:
+            print_exception()
+        return None
 
 def is_mask_matched(mask, value):
     return mask and value and re.match(mask, value)
@@ -705,7 +843,9 @@ def check_perso_log(logs, filename, encoding=default_encoding, **kw):
     date_format = kw.get('date_format') or DEFAULT_DATETIME_FORMAT
     case_insensitive = kw.get('case_insensitive')
     no_span = kw.get('no_span')
+
     forced = kw.get('forced') and True or False
+    unresolved = kw.get('unresolved') and True or False
 
     set_globals(kw.get('globals'))
 
@@ -715,7 +855,7 @@ def check_perso_log(logs, filename, encoding=default_encoding, **kw):
 
         try:
             for n, column in enumerate(columns):
-                ob[column] = values[n]
+                ob[column] = values[n].strip()
         except:
             pass
 
@@ -723,6 +863,8 @@ def check_perso_log(logs, filename, encoding=default_encoding, **kw):
             x = datetime.datetime.strptime('%s' % ob['Date'], fmt[1])
             ob['Date'] = cdate(x, date_format)
         except:
+            if IsDebug and IsPrintExceptions:
+                print_exception()
             return None
 
         if 'Code' in ob:
@@ -735,20 +877,25 @@ def check_perso_log(logs, filename, encoding=default_encoding, **kw):
         # ------------------------------
         # Observer Log-lines constructor
         # ------------------------------
-
+        """
         if case_insensitive:
             keys = [key.lower() for key in keys]
-
+        """
         i = 0
         while lines and i < len(lines):
             filename, line = lines[i]
-            if checkline(line, logs, keys, getter=_get_log_item, 
-                         token=None, unique=False, with_count=False,
-                         case_insensitive=case_insensitive,
-                         no_span=no_span,
-                         ):
+            x = checkline(line, logs, keys, getter=_get_log_item, 
+                          token=None, unique=False, with_count=False,
+                          case_insensitive=case_insensitive,
+                          no_span=no_span,
+                          )
+            if x != 0:
                 lines.pop(i)
             else:
+                """
+                if IsDeepDebug and unresolved:
+                    print_to(None, '!!! UNRESOLVED:\n%s\n%s%s\n' % (filename, line, keys))
+                """
                 i += 1
         return
 
@@ -836,6 +983,7 @@ def check_infoexchange_log(logs, filename, encoding=default_encoding, **kw):
     no_span = kw.get('no_span')
 
     forced = kw.get('forced') and True or False
+
     original_logger = kw.get('original_logger') and True or False
 
     def _get_log_item(line):
@@ -848,7 +996,7 @@ def check_infoexchange_log(logs, filename, encoding=default_encoding, **kw):
 
         try:
             for n, column in enumerate(columns):
-                ob[column] = values[n]
+                ob[column] = values[n].strip()
         except:
             if IsDebug and IsPrintExceptions:
                 print_exception()
@@ -984,7 +1132,9 @@ def check_sdc_log(logs, filename, encoding=default_encoding, **kw):
     date_format = kw.get('date_format') or DEFAULT_DATETIME_FORMAT
     case_insensitive = kw.get('case_insensitive')
     no_span = kw.get('no_span')
+    
     forced = kw.get('forced') and True or False
+    unresolved = kw.get('unresolved') and True or False
 
     set_globals(kw.get('globals'))
 
@@ -994,7 +1144,7 @@ def check_sdc_log(logs, filename, encoding=default_encoding, **kw):
 
         try:
             for n, column in enumerate(columns):
-                ob[column] = values[n]
+                ob[column] = values[n].strip()
         except:
             pass
 
@@ -1014,20 +1164,25 @@ def check_sdc_log(logs, filename, encoding=default_encoding, **kw):
         # ------------------------------
         # Observer Log-lines constructor
         # ------------------------------
-
+        """
         if case_insensitive:
             keys = [key.lower() for key in keys]
-
+        """
         i = 0
         while lines and i < len(lines):
             filename, line = lines[i]
-            if checkline(line, logs, keys, getter=_get_log_item, 
-                         token=None, unique=False, with_count=False,
-                         case_insensitive=case_insensitive,
-                         no_span=no_span,
-                         ):
+            x = checkline(line, logs, keys, getter=_get_log_item, 
+                          token=None, unique=False, with_count=False,
+                          case_insensitive=case_insensitive,
+                          no_span=no_span,
+                          )
+            if x != 0:
                 lines.pop(i)
             else:
+                """
+                if IsDeepDebug and unresolved:
+                    print_to(None, '!!! UNRESOLVED:\n%s\n%s%s\n' % (filename, line, keys))
+                """
                 i += 1
         return
 
@@ -1144,7 +1299,7 @@ def check_exchange_log(logs, filename, encoding=default_encoding, **kw):
 
         try:
             for n, column in enumerate(columns):
-                ob[column] = values[n]
+                ob[column] = values[n].strip()
         except:
             pass
 
@@ -1166,18 +1321,19 @@ def check_exchange_log(logs, filename, encoding=default_encoding, **kw):
         # ------------------------------
         # Observer Log-lines constructor
         # ------------------------------
-
+        """
         if case_insensitive:
             keys = [key.lower() for key in keys]
-
+        """
         i = 0
         while lines and i < len(lines):
             filename, line = lines[i]
-            if checkline(line, logs, keys, getter=_get_log_item, 
-                         token=None, unique='unique' in options, with_count='count' in options,
-                         case_insensitive=case_insensitive,
-                         no_span=no_span,
-                         ):
+            x = checkline(line, logs, keys, getter=_get_log_item, 
+                          token=None, unique='unique' in options, with_count='count' in options,
+                          case_insensitive=case_insensitive,
+                          no_span=no_span,
+                          )
+            if x != 0:
                 lines.pop(i)
             else:
                 i += 1
