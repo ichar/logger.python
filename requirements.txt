@@ -14,7 +14,7 @@ dj-static==0.0.6
 future==0.16.0
 google==1.6
 GoogleScraper==0.1.37
-gunicorn==19.3.0
+gunicorn==19.5.0
 html5lib==0.999
 ipdb==0.8
 ipython==2.1.0
