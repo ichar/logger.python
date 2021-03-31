@@ -19,7 +19,7 @@ html5lib==0.999
 ipdb==0.8
 ipython==2.1.0
 kombu==4.0.0
-lxml==3.4.4
+lxml==4.6.3
 mandrill==1.0.56
 mpmath==0.19
 mysql-connector-python==2.1.3
