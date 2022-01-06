@@ -4,7 +4,7 @@ argh==0.26.2
 beautifulsoup4==4.4.0
 billiard==3.5.0.2
 cassandra-driver==3.7.1
-celery==4.0.0
+celery==5.2.2
 chardet==2.3.0
 cssselect==0.9.1
 cx-Freeze==4.3.3
