@@ -17,7 +17,7 @@ GoogleScraper==0.1.37
 gunicorn==19.3.0
 html5lib==0.999
 ipdb==0.8
-ipython==2.1.0
+ipython==7.16.3
 kombu==4.0.0
 lxml==3.4.4
 mandrill==1.0.56
