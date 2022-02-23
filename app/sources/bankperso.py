@@ -49,6 +49,16 @@ class Source(AbstractSource):
     def __call__(self, engine=None, limit=None):
         return super(Source, self).__call__(engine=engines[_database], limit=limit)
 
+    def is_dead(self, force=None):
+        engine = engines[_database]
+
+        try:
+            engine = check_engine(engine, force=force)
+        except:
+            engine = None
+
+        return engine is None or super(Source, self).is_dead(force=force)
+
     def emitter(self, engine=None, limit=None):
         return super(Source, self).emitter(engines[_database], limit)
 
@@ -68,8 +78,9 @@ class Source(AbstractSource):
         config = self._make_logger_config()
         client = self.config.get('client')
 
-        getPersoLogInfo(dates=dates,
-                        client=client,
+        aliases = self._get_client_aliases(client)
+
+        getPersoLogInfo(dates=dates, client=client, aliases=aliases,
                         fmt=DEFAULT_DATETIME_PERSOLOG_FORMAT, 
                         date_format=None,
                         config=config,

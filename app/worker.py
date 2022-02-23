@@ -122,6 +122,15 @@ def set_globals(config):
     if 'printexceptions' in config:
         IsPrintExceptions = config.get('printexceptions') or 0
 
+def mdate(filename):
+    try:
+        t = os.path.getmtime(filename)
+        return datetime.datetime.fromtimestamp(t)
+    except:
+        if IsPrintExceptions:
+            print_exception()
+        return None
+
 #   ------------------------------
 #   General arguments definitions:
 #   ------------------------------
@@ -605,6 +614,7 @@ def lines_emitter(filename, mode, encoding, msg, **kw):
                     print_to(None, '!!! EMITTER ERROR[%s]: %s\n%s' % (filename, info, line))
                 if IsPrintExceptions:
                     print_exception(1)
+                    break
                 else:
                     raise
 
@@ -698,15 +708,6 @@ def checkline(line, logs, keys, getter, **kw):
 
     return logged
 
-def mdate(filename):
-    try:
-        t = os.path.getmtime(filename)
-        return datetime.datetime.fromtimestamp(t)
-    except:
-        if IsPrintExceptions:
-            print_exception()
-        return None
-
 def is_mask_matched(mask, value):
     return mask and value and re.match(mask, value)
 
@@ -726,7 +727,8 @@ def is_today_file(name, dates=None, filemask=None, filename=None, format=None):
     #
     if not dates:
         now = datetime.datetime.now()
-        return mdate((filename or name)).date() == now.date()
+        x = mdate(filename or name)
+        return x is not None and x.date() == now.date() and True or False
     #
     # Имя файла начинается с даты (bankperso): 20170509_Load_SyncroResTinkoff.log
     #

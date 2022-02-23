@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 
-product_version = '1.74, 2019-06-05 with cp1251 (Python3)'
+product_version = '1.75, 2020-12-11 with cp1251 (Python3)'
 
 #########################################################################################
 

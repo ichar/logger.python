@@ -9,7 +9,7 @@ import re
 from collections import Iterable
 
 basedir = \
-    os.path.split(sys.executable)[1] == 'service.exe' and 'C:/apps/LoggerService' or \
+    os.path.split(sys.executable)[1] == 'service.exe' and 'G:/apps/LoggerService' or \
     os.path.abspath(os.path.dirname(__file__))
 
 # ----------------------------
@@ -17,7 +17,7 @@ basedir = \
 # ----------------------------
 
 IsDebug                = 1  # Debug[stdout]: prints general info
-IsDeepDebug            = 0  # Debug[stdout]: prints detailed info, replicate to console
+IsDeepDebug            = 1  # Debug[stdout]: prints detailed info, replicate to console
 IsTrace                = 1  # Trace[errorlog]: output execution trace
 IsLogTrace             = 1  # Trace[errorlog]: output detailed trace for Log-actions
 IsObserverTrace        = 1  # Trace[errorlog]: output detailed trace for Log Events Observer
@@ -44,36 +44,36 @@ default_encoding       = 'cp1251'
 default_iso            = 'ISO-8859-1'
 
 CONNECTION = {
-    'bankperso'    : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'BankDB', 'timeout':15 },
-    'orderstate'   : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'OrderState', 'timeout':15 },
-    'configurator' : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'BankDB', 'timeout':15  },
-    'orderlog'     : { 'server':'localhost', 'user':'sa', 'password':'*****', 'database':'OrderLog', 'timeout':15  },
+    'bankperso'    : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'BankDB', 'timeout':15 },
+    'orderstate'   : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'OrderState', 'timeout':15 },
+    'configurator' : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'BankDB', 'timeout':15  },
+    'orderlog'     : { 'server':'localhost', 'user':'sa', 'password':'admin', 'database':'OrderLog', 'timeout':15  },
 }
 
 smtphost1 = {
-    'host'         : '172.9.9.9', 
+    'host'         : '172.19.13.5', 
     'port'         : 25,
     'connect'      : None,
     'tls'          : 0,
     'method'       : 1,
-    'from'         : 'mailrobot@company.ru',
+    'from'         : 'mailrobot@rosan.ru',
 }
 
 smtphost2 = {
     'host'         : 'smtp-mail.outlook.com', 
     'port'         : 587,
-    'connect'      : {'login' : "support@company.ru", 'password' : "Rof86788"},
+    'connect'      : {'login' : "support@expresscard.ru", 'password' : "Rof86788"},
     'tls'          : 1,
     'method'       : 2,
-    'from'         : 'support@company.ru',
+    'from'         : 'support@expresscard.ru',
 }
 
 smtphosts = (smtphost1, smtphost2)
 
 email_address_list = {
-    'adminbd'      : 'admin_bd@company.ru',     
-    'support'      : 'support@company.ru',
-    'mailrobot'    : 'mailrobot@company.ru',
+    'adminbd'      : 'admin_bd@rosan.ru',     
+    'support'      : 'support@expresscard.ru',
+    'mailrobot'    : 'mailrobot@rosan.ru',
 }
 
 image_encoding = {
@@ -94,6 +94,7 @@ SDC_ROOT = {
     'default'      : (default_unicode, 'Z:/SDC/default', 'sdc_(.*)_(\d{2}\.\d{2}\.\d{4}).*', 'with_aliases',),
     'VTB24'        : (default_unicode, 'Z:/SDC/VTB24', 'sdc_(.*)_(\d{2}\.\d{2}\.\d{4}).*', ''),
     'CITI_BANK'    : (default_unicode, 'Z:/SDC/CITI', 'sdc_(.*)_(\d{2}\.\d{2}\.\d{4}).*', ''),
+    'PostBank'     : (default_unicode, 'Z:/SDC/SERVER', 'sdc_(.*)_(\d{2}\.\d{2}\.\d{4}).*', ''),
 }
 
 EXCHANGE_ROOT = {
@@ -102,7 +103,7 @@ EXCHANGE_ROOT = {
 }
 
 MAX_UNRESOLVED_LINES = (9, 99, 3)
-COMPLETE_STATUSES = (62, 64, 98, 197, 198, 201, 202, 203, 255,) # 
+COMPLETE_STATUSES = (0, 999) # (62, 64, 98, 197, 198, 201, 202, 203, 255,) # 
 
 ansi = not sys.platform.startswith("win")
 

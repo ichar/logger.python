@@ -2,9 +2,10 @@
 
 from sqlalchemy import create_engine
 import pymssql
+import time
 
 from config import (
-     CONNECTION, IsDebug, IsDeepDebug,
+     CONNECTION, IsDebug, IsDeepDebug, IsPrintExceptions,
      default_unicode, default_encoding, default_iso,
      print_to, print_exception
      )
@@ -746,13 +747,39 @@ class BankPersoEngine():
     def __init__(self, name=None, user=None, connection=None):
         self.name = name or 'default'
         self.connection = connection or default_connection
-        self.engine = create_engine('mssql+pymssql://%(user)s:%(password)s@%(server)s' % self.connection)
-        self.conn = self.engine.connect()
+        self.engine = None
+        self.conn = None
         self.engine_error = False
         self.user = user
 
-        if IsDeepDebug:
-            print('>>> open connection[%s]' % self.name)
+        self.create_engine()
+
+    def create_engine(self):
+        self.engine = create_engine('mssql+pymssql://%(user)s:%(password)s@%(server)s' % self.connection)
+
+    def open(self):
+        n = 1
+        while True:
+            try:
+                if self.engine is None:
+                    self.create_engine()
+                self.conn = self.engine.connect()
+                self.engine_error = False
+
+                if IsDeepDebug:
+                    print('>>> open connection[%s]' % self.name)
+
+                break
+            except:
+                n += 1
+
+                if n > 3:
+                    self.engine = None
+
+                self.conn = None
+                self.engine_error = True
+
+                time.sleep(3)
 
     def getReferenceID(self, name, key, value, tid='TID'):
         id = None
@@ -865,7 +892,9 @@ class BankPersoEngine():
         return rows
 
     def run(self, sql, args=None, no_cursor=False):
-        if self.conn is None or self.conn.closed:
+        self.open()
+
+        if self.engine is None or self.conn is None or self.conn.closed:
             return None
 
         rows = []
@@ -880,37 +909,62 @@ class BankPersoEngine():
                     rows = [row for row in cursor if cursor]
                 trans.commit()
             except:
-                trans.rollback()
+                try:
+                    trans.rollback()
+                except:
+                    pass
 
                 print_to(None, 'NO SQL EXEC: %s' % sql)
-                print_exception()
+
+                if IsPrintExceptions:
+                    print_exception()
 
                 self.engine_error = True
                 rows = None
 
+        self.close()
+
         return rows
 
     def execute(self, sql):
+        self.open()
+
+        if self.engine is None:
+            return None
+
+        res = None
+
         try:
-            return self.engine.execute(sql)
+            res = self.engine.execute(sql)
         except:
             print_to(None, 'NO SQL EXEC: %s' % sql)
-            print_exception()
+
+            if IsPrintExceptions:
+                print_exception()
 
             self.engine_error = True
 
-            return None
+        self.close()
+
+        return res
 
     def dispose(self):
-        self.engine.dispose()
+        try:
+            self.engine.dispose()
+        except:
+            return
 
         if IsDeepDebug:
             print('>>> dispose')
 
     def close(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except:
+            pass
 
         if IsDeepDebug:
             print('>>> close connection[%s]' % self.name)
 
-        self.dispose()
+        self.conn = None
+        self.engine = None

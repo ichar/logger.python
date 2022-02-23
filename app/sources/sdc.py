@@ -46,6 +46,16 @@ class Source(AbstractSource):
     def __call__(self, engine=None, limit=None):
         return super(Source, self).__call__(engine=engines[_database], limit=limit)
 
+    def is_dead(self, force=None):
+        engine = engines[_database]
+
+        try:
+            engine = check_engine(engine, force=force)
+        except:
+            engine = None
+
+        return engine is None or super(Source, self).is_dead(force=force)
+
     def emitter(self, engine=None, limit=None):
         return super(Source, self).emitter(engines[_database], limit)
 
@@ -65,8 +75,9 @@ class Source(AbstractSource):
         config = self._make_logger_config()
         client = self.config.get('client')
 
-        getSDCLogInfo(dates=dates,
-                      client=client,
+        aliases = self._get_client_aliases(client)
+
+        getSDCLogInfo(dates=dates, client=client, aliases=aliases,
                       fmt=DEFAULT_DATETIME_SDCLOG_FORMAT, 
                       date_format=None,
                       config=config,
@@ -192,24 +203,7 @@ class Source(AbstractSource):
             dates = order.get('dates') or (date_from, date_to,)
 
         if not 'aliases' in order:
-            if client:
-                aliases.append(client)
-
-                # -----------------------
-                # Get Client Aliases list
-                # -----------------------
-
-                where = "Aliases like '%" + client +"%' or Name='" + client + "'"
-    
-                cursor = engine.runQuery('orderstate-aliases', where=where, as_dict=True)
-                if cursor:
-                    for n, row in enumerate(cursor):
-                        if row['Aliases'] is not None and len(row['Aliases']):
-                            aliases.extend(row['Aliases'].split(':'))
-
-            if len(aliases):
-                aliases = list(set(aliases))
-
+            pass #aliases = self._get_client_aliases(client)
         else:
             aliases = order.get('aliases') or []
 

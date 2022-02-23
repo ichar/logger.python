@@ -19,7 +19,7 @@ import logging
 
 from watchdog.observers import Observer
 
-sys.path.append('C:/apps/LoggerService')
+sys.path.append('G:/apps/LoggerService')
 
 from config import (
      basedir, IsDebug, IsDeepDebug, IsTrace, IsDisableOutput,
@@ -232,20 +232,48 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
 
         date_from = None
 
-        try:
-            app = self.create_app()
-            app._init_state(date_from=date_from, callback=self)
+        while True:
+            self.restart_requested = False
 
-            self.run(app)
-            self.start_observer(app)
+            try:
+                app = self.create_app()
+                app._init_state(date_from=date_from, callback=self)
 
-            app._term()
+                self.run(app)
+                self.start_observer(app)
 
-            del app
-        
-        except:
-            print_exception()
-            self._out('main thread exception (look at traceback.log)', is_error=True)
+                if app is not None:
+                    app.should_be_stop()
+
+                    is_dead = 0
+
+                    while True:
+                        is_finished = app.is_finished()
+                        is_dead = app.is_dead(force=1)
+
+                        self._out('... stopping: %s %s' % (is_finished, is_dead))
+                        time.sleep(5)
+
+                        if is_finished or is_dead:
+                            break
+
+                    if not is_dead:
+                        app._term()
+
+                del app
+
+            except:
+                self._out('main thread exception (look at traceback.log)', is_error=True)
+                print_exception(1)
+
+            if not self.restart_requested or self.stop_requested:
+                break
+
+            self._out('==> Restart...')
+
+            time.sleep(15)
+
+        self._out('==> Finish')
 
         self._stop_logger()
 
@@ -269,79 +297,81 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
 
         observer_found = None
 
-        while True:
-            self.restart_requested = False
+        producer = LogProducer(app, lock, source=source, logger=self._logger, watch_everything=self.watch_everything)
+        consumer = LogConsumer(args=(app, producer, lock, self._logger, self.consumer_sleep))
+        consumer.start()
 
-            producer = LogProducer(app, lock, source=source, logger=self._logger, watch_everything=self.watch_everything)
-            consumer = LogConsumer(args=(app, producer, lock, self._logger, self.consumer_sleep))
-            consumer.start()
+        try:
+            observer = Observer(timeout=self.observer_timeout)
+            observer.schedule(producer, source, recursive=True)
+            observer.start()
 
-            try:
-                observer = Observer(timeout=self.observer_timeout)
-                observer.schedule(producer, source, recursive=True)
-                observer.start()
+            observer_found = {}
 
-                observer_found = {}
+            while not self.stop_requested:
+                if restart_timeout and producer.timestamp is not None:
+                    timestamp = getToday() - producer.timestamp
+                    if timestamp.total_seconds() > restart_timeout:
+                        self._out('restart on producer.timestamp: %s' % restart_timeout, is_error=True)
+                        self.restart_requested = True
 
-                while not self.stop_requested:
-                    if restart_timeout and producer.timestamp is not None:
-                        timestamp = getToday() - producer.timestamp
-                        if timestamp.total_seconds() > restart_timeout:
-                            self.restart_requested = True
-                            break
+                time.sleep(5)
 
-                    time.sleep(5)
+                if app is None or app.is_dead(force=0):
+                    self._out('app is dead', is_error=True)
+                    self.restart_requested = True
+                    app = None
+                if not observer.is_alive():
+                    self._out('observer is lifeless', is_error=True)
+                    self.restart_requested = True
+                if not consumer.is_alive():
+                    self._out('cunsumer is lifeless', is_error=True)
+                    self.restart_requested = True
 
-                    if not observer.is_alive():
-                        self._out('observer is lifeless', is_error=True)
-                        break
-                    if not consumer.is_alive():
-                        self._out('cunsumer is lifeless', is_error=True)
-                        break
+                if self.restart_requested:
+                    break
 
-            except FileNotFoundError as ex:
-                self.restart_requested = True
-                self._out('!!! Observer Exception: %s' % ex, is_error=True)
+        except (OSError, FileNotFoundError) as ex:
+            self.restart_requested = True
+            self._out('!!! Observer Exception: %s' % ex, is_error=True)
 
-                _default_except_handler(15)
+            _default_except_handler(15)
 
-            except:
-                _default_except_handler()
-                raise
+        except Exception as ex:
+            self.restart_requested = True
+            self._out('!!! Unexpected Exception: %s' % ex, is_error=True)
 
-            else:
-                self._out('==> Stop, stop_requested: %s' % self.stop_requested)
+            _default_except_handler(30)
 
-            finally:
-                if consumer is not None and consumer.is_alive():
-                    observer_found = consumer.stop()
-                    consumer.join()
-                if observer is not None and observer.is_alive():
-                    producer.stop()
-                    observer.stop()
+            #raise
 
-                if observer_found:
-                    self._found.update(observer_found)
+        else:
+            self._out('==> Stop, stop_requested: %s' % self.stop_requested)
 
-                if observer is not None:
-                    observer.join()
+        finally:
+            if producer is not None:
+                producer.stop()
 
-            consumer = None
-            producer = None
-            observer = None
+            if observer is not None and observer.is_alive():
+                observer.stop()
+                observer.join()
 
-            if not self.restart_requested or self.stop_requested:
-                break
+            if consumer is not None and consumer.is_alive():
+                observer_found = consumer.stop()
+                consumer.join()
 
-            self._out('==> Restart...')
+            if observer_found:
+                self._found.update(observer_found)
 
-        self._out('==> Finish')
+        consumer = None
+        producer = None
+        observer = None
 
     def run(self, app):
         emitter = self._config.get('emitter') or False
         limit = self._config.get('limit') or 0
 
-        print_to(None, '>>> Logger Started[%s], root: %s' % ( \
+        print_to(None, '>>> Logger Started[%s], root: %s' % ( 
             self._config['ctype'],
             self._config['root'],
         ))
@@ -358,6 +388,10 @@ class LoggerWindowsService(win32serviceutil.ServiceFramework):
                 base.should_be_stop()
 
             self._processed, self._found = base.stop()
+
+        except:
+            print_exception()
+            self._out('run exception (look at traceback.log)', is_error=True)
 
         finally:
             base.join()

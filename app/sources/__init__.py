@@ -146,7 +146,7 @@ _database = 'orderlog'
 def connect(name):
     global engines
     engine = engines.get(name)
-    if engine is not None and not engine.conn.closed:
+    if engine is not None and engine.conn is not None and not engine.conn.closed:
         engine.close()
 
     engines[name] = None
@@ -155,13 +155,17 @@ def connect(name):
     engines[name] = BankPersoEngine(name=name, connection=CONNECTION[name])
 
 def check_engine(engine, force=False):
+    if engine is None:
+        return None
+
+    name = getattr(engine, 'name')
+
     if engine.engine_error or force:
-        name = getattr(engine, 'name')
         connect(name)
         engine = engines.get(name)
 
-    if IsDebug:
-        print_to(None, '!!! engine reopened[%s], error:%s' % (name, engine.engine_error))
+        if IsDebug:
+            print_to(None, '!!! engine reopened[%s], error:%s, force:%s' % (name, engine.engine_error, force))
 
     return engine
 
@@ -180,6 +184,7 @@ def after(name):
         def wrapper(*args):
             if engines[name] is not None:
                 engines[name].close()
+                engines[name] = None
             return f(*args)
         return wrapper
     return decorator
@@ -232,14 +237,25 @@ class BaseEmitter(threading.Thread):
         if IsDebug:
             self._logger.out('emitter run[%s]' % self.ident)
 
-        app = self._consumer
-        limit = self._limit
+        while True:
+            app = self._consumer
+            limit = self._limit
 
-        if app is not None and app.is_ready():
-            if self._emitter:
-                self._processed, self._found = app.emitter(limit=limit)
+            time.sleep(3)
+
+            try:
+                if app is not None and app.is_ready():
+                    if self._emitter:
+                        self._processed, self._found = app.emitter(limit=limit)
+                    else:
+                        self._processed, self._found = app(limit=limit)
+            except:
+                if IsPrintExceptions:
+                    print_exception()
+                else:
+                    raise
             else:
-                self._processed, self._found = app(limit=limit)
+                break
 
 
 class Orders:
@@ -552,14 +568,48 @@ class AbstractSource:
         return engines and True or False
 
     def is_finished(self):
-        return self.finished
+        return self.finished and 1 or 0
+
+    def is_dead(self, force=None):
+        try:
+            self._engine = check_engine(self._engine, force=force)
+        except:
+            self._engine = None
+
+        return self._engine is None and 1 or 0
 
     def should_be_stop(self):
         self.stop = True
 
     @after(_database)
     def _term(self):
-        pass
+        self._engine = None
+
+    def _get_client_aliases(self, client):
+        """
+            Get Client Aliases list
+        """
+        aliases = []
+
+        if client:
+            aliases.append(client)
+
+            where = "Aliases like '%" + client +"%' or Name='" + client + "'"
+            encode_columns = ('Aliases',)
+
+            cursor = self._engine.runQuery('orderstate-aliases', where=where, encode_columns=encode_columns, as_dict=True)
+            if cursor:
+                for n, row in enumerate(cursor):
+                    if row['Aliases'] is not None and len(row['Aliases']):
+                        aliases.extend(row['Aliases'].split(':'))
+
+        if len(aliases):
+            aliases = list(set(aliases))
+
+        if IsDebug:
+            print_to(None, '... client: %s, aliases: %s' % (client, aliases))
+
+        return aliases
 
     ##  ---------------
     ##  Private Members
@@ -997,6 +1047,22 @@ class AbstractSource:
 
         return regexes
 
+    def _log_ignore_regexes(self):
+        ignore_regexes = list([r'%s' % x for x in filter(None, self.config.get('exclude', '').split(';;'))])
+
+        if IsDebug:
+            self.logger.out('ignore_regexes: %s' % ignore_regexes)
+
+        return ignore_regexes
+
+    def _ignore_directories(self):
+        ignore_directories = self.config.get('ignore_directories') and True or False
+
+        if IsDebug:
+            self.logger.out('ignore_directories: %s' % ignore_directories)
+
+        return ignore_directories
+
     def _is_matched_filename(self, filename):
         """Override this method to check given Log-filename"""
         return True
@@ -1058,6 +1124,9 @@ class AbstractSource:
         orders = self.orders.getActiveItems()
 
         for n, id in enumerate(orders):
+            if self.stop:
+                break
+
             order = self.orders.get(id)
 
             # ---------------------------------------------------------
@@ -1750,7 +1819,9 @@ class LogProducer(RegexMatchingEventHandler):
         self._consumer = consumer
 
         regexes = consumer._log_regexes()
-        super(LogProducer, self).__init__(regexes=regexes)
+        ignore_regexes = consumer._log_ignore_regexes()
+        ignore_directories = consumer._ignore_directories()
+        super(LogProducer, self).__init__(regexes=regexes, ignore_regexes=ignore_regexes, ignore_directories=ignore_directories)
 
         self._lock = lock
         self._source = kw.get('source')
